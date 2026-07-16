@@ -262,7 +262,14 @@ def startup_sequence(timeout: float = 60) -> int:
     proc = _launch_virtuoso(setup_path)
     if not proc:
         return 1
-    print(f"[auto-start] PID {proc.pid}")
+
+    # Verify process is alive after brief settle
+    time.sleep(2)
+    if proc.poll() is not None:
+        print(f"[auto-start] Virtuoso exited immediately (code={proc.returncode})")
+        return 1
+
+    print(f"[auto-start] Virtuoso PID {proc.pid} started.")
 
     # Quick check — Virtuoso cold start is slow, don't block forever
     if _wait_for_daemon(port, timeout=min(timeout, 15)):

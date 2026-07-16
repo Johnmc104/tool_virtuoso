@@ -249,23 +249,29 @@ def startup_sequence(timeout: float = 60) -> int:
         return 0
 
     if _is_virtuoso_running():
-        print("[auto-start] Virtuoso already running, waiting...")
-        if _wait_for_daemon(port, timeout=timeout):
+        print("[auto-start] Virtuoso already running.")
+        if is_daemon_responding(port):
             print("[auto-start] Ready!")
             return 0
-        print(f"[auto-start] Timeout. load(\"{setup_path}\")")
-        return 1
+        print(f"  Waiting for CIW to load setup script...")
+        print(f"  Or manually: load(\"{setup_path}\")")
+        print(f"  Check: vbridge status")
+        return 0
 
     print("[auto-start] Launching Virtuoso...")
     proc = _launch_virtuoso(setup_path)
     if not proc:
         return 1
-    print(f"[auto-start] PID {proc.pid}, waiting for daemon...")
-    if _wait_for_daemon(port, timeout=timeout):
+    print(f"[auto-start] PID {proc.pid}")
+
+    # Quick check — Virtuoso cold start is slow, don't block forever
+    if _wait_for_daemon(port, timeout=min(timeout, 15)):
         print("[auto-start] Ready!")
         return 0
-    print("[auto-start] Timeout waiting for daemon")
-    return 1
+
+    print(f"[auto-start] Virtuoso is starting (may take 1-2 minutes).")
+    print(f"  Check: vbridge status")
+    return 0
 
 
 def wait_bridge_ready(timeout: float = 30) -> bool:

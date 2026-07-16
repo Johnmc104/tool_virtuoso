@@ -1,0 +1,21 @@
+# Build output
+release/
+dist/
+build/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+
+# Packaging cache (large source tarballs + RPMs)
+packaging/src/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+
+# Claude Code
+.claude/

@@ -1,0 +1,38 @@
+project:
+  name: virtuoso-bridge
+
+python:
+  version: "3.11.9"
+
+components:
+  openssl: true
+  sqlite: false
+
+binaries:
+  - name: virtuoso-bridge
+    entry: entry_virtuoso_bridge.py
+    onefile: true
+    hidden_imports: [pydantic, dotenv, yaml]
+    collect_submodules: [virtuoso_bridge]
+    collect_all: [virtuoso_bridge]
+
+  - name: vbridge
+    entry: entry_vbridge.py
+    onefile: true
+    hidden_imports: [pydantic, dotenv, yaml]
+    collect_submodules: [virtuoso_bridge, vbridge]
+    collect_all: [virtuoso_bridge]
+
+dependencies:
+  pyproject_toml: virtuoso-bridge-lite/pyproject.toml
+
+sources:
+  - path: virtuoso-bridge-lite/src/
+    dest: src/
+  - vbridge/
+
+extra_copy:
+  - entry_virtuoso_bridge.py
+  - entry_vbridge.py
+
+output_dir: release/bin

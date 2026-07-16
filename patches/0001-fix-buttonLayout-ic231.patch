@@ -1,0 +1,13 @@
+diff --git a/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge.il b/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge.il
+index e6b7e89..721567a 100644
+--- a/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge.il
++++ b/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge.il
+@@ -442,7 +442,7 @@ hiCreateAppForm(
+     ; RBDLog and restarts the daemon if any toggled.  ``?callback``
+     ; is also wired to RBMApply so future layout changes that re-add
+     ; an OK button keep the same semantics.
+-    ?buttonLayout 'Empty
++    ?buttonLayout 'OKCancelApply
+     ?help ""
+     ?initialSize  720:520
+     ?minSize      720:520

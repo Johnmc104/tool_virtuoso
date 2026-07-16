@@ -1,6 +1,6 @@
 PROJECT_NAME  := virtuoso-bridge
 BINARIES      := virtuoso-bridge vbridge
-PACKAGE_FILES := README.md docs/
+PACKAGE_FILES := README.md docs/ lib/
 
 include packaging/common/packaging.mk
 
@@ -22,3 +22,10 @@ pre-build::
 
 post-build::
 	@git -C virtuoso-bridge-lite checkout -- . 2>/dev/null || true
+
+pre-package::
+	@rm -rf lib && mkdir -p lib
+	@cp -r virtuoso-bridge-lite/src/virtuoso_bridge lib/
+	@cp -r vbridge lib/
+	@find lib -name __pycache__ -exec rm -rf {} + 2>/dev/null || true
+	@cp virtuoso-bridge-lite/pyproject.toml lib/

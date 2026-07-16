@@ -7,8 +7,8 @@ Cadence Virtuoso SKILL Bridge 二进制工具集。提供命令行直接操控 V
 解压分发包，将 `bin/` 加入 PATH：
 
 ```bash
-tar xzf virtuoso-bridge-*-linux-x86_64.tar.gz -C ~/.local/
-export PATH="$HOME/.local/bin:$PATH"
+tar xzf virtuoso-bridge-*-linux-x86_64.tar.gz -C /opt/vtool/
+export PATH="/opt/vtool/bin:$PATH"
 ```
 
 或使用 `make deploy-bin`（需设置 `VTOOL_HOME`）：
@@ -16,6 +16,21 @@ export PATH="$HOME/.local/bin:$PATH"
 ```bash
 export VTOOL_HOME=/opt/vtool
 make deploy-bin
+```
+
+## Python 源码使用
+
+分发包中 `lib/` 目录包含完整 Python 源码，可供多用户共享引用：
+
+```bash
+export PYTHONPATH="/opt/vtool/lib:$PYTHONPATH"
+```
+
+之后可直接在 Python 中使用：
+
+```python
+from virtuoso_bridge.client import VirtuosoClient
+from vbridge.auto_start import startup_sequence
 ```
 
 ## 快速开始

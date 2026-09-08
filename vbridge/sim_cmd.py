@@ -50,7 +50,7 @@ def run_sim(netlist: str, *, output_dir: str | None = None,
 
 def run_result(raw_dir: str, *, signal: str | None = None,
                json_output: bool = False) -> int:
-    from virtuoso_bridge.spectre.psf import read_psf_ascii, result_file
+    from virtuoso_bridge.spectre.psf import read_psf_ascii
 
     d = Path(raw_dir)
     if not d.is_dir():

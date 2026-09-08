@@ -3,13 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import os
 import sys
 from pathlib import Path
 
 from virtuoso_bridge.cli import (
     build_parser as upstream_build_parser,
-    main as upstream_main,
     _CLI_PROFILE,
     _SCREENSHOT_TARGET,
     _SCREENSHOT_OUTPUT,
@@ -100,28 +98,33 @@ def build_parser():
     sp_batch.add_argument("--view", default="schematic")
     sp_batch.add_argument("--timeout", type=int, default=120)
     sp_batch.add_argument("-p", "--profile", default=None)
+    sp_batch.add_argument("--env", default=None)
 
     sp_create = sch_sub.add_parser("create", help="Create/open cellview")
     sp_create.add_argument("lib"); sp_create.add_argument("cell")
     sp_create.add_argument("--view", default="schematic")
     sp_create.add_argument("--timeout", type=int, default=30)
     sp_create.add_argument("-p", "--profile", default=None)
+    sp_create.add_argument("--env", default=None)
 
     sp_save = sch_sub.add_parser("save", help="Save + check cellview")
     sp_save.add_argument("--timeout", type=int, default=30)
     sp_save.add_argument("-p", "--profile", default=None)
+    sp_save.add_argument("--env", default=None)
 
     sp_list = sch_sub.add_parser("list", help="List instances")
     sp_list.add_argument("lib"); sp_list.add_argument("cell")
     sp_list.add_argument("--view", default="schematic")
     sp_list.add_argument("--timeout", type=int, default=30)
     sp_list.add_argument("-p", "--profile", default=None)
+    sp_list.add_argument("--env", default=None)
 
     sp_read = sch_sub.add_parser("read", help="Read schematic structure")
     sp_read.add_argument("lib"); sp_read.add_argument("cell")
     sp_read.add_argument("--json", action="store_true", dest="json_output")
     sp_read.add_argument("--timeout", type=int, default=30)
     sp_read.add_argument("-p", "--profile", default=None)
+    sp_read.add_argument("--env", default=None)
 
     sp_param = sch_sub.add_parser("param", help="Set instance parameter")
     sp_param.add_argument("lib"); sp_param.add_argument("cell")
@@ -131,6 +134,7 @@ def build_parser():
     sp_param.add_argument("--view", default="schematic")
     sp_param.add_argument("--timeout", type=int, default=30)
     sp_param.add_argument("-p", "--profile", default=None)
+    sp_param.add_argument("--env", default=None)
 
     # -- sim ---
     sp_sim = subparsers.add_parser("sim", help="Spectre simulation")

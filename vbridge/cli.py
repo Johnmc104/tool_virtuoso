@@ -1,4 +1,4 @@
-"""vbridge CLI — upstream virtuoso-bridge commands + exec/load/sch/daemon/auto-start."""
+"""vbridge CLI — upstream virtuoso-bridge commands + exec/sch/daemon/auto-start."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from virtuoso_bridge.cli import (
     main as upstream_main,
     _CLI_PROFILE,
     _SCREENSHOT_TARGET,
+    _SCREENSHOT_OUTPUT,
     _SNAPSHOT_OPTS,
     _EXPORT_VISIO_OPTS,
     _make_stdio_safe,
@@ -21,11 +22,20 @@ from virtuoso_bridge.cli import (
     cli_restart,
     cli_status,
     cli_license,
+    cli_load,
+    cli_eval,
     cli_dismiss_dialog,
+    cli_dismiss_window,
+    cli_list_windows,
     cli_screenshot,
     cli_windows,
     cli_snapshot,
     cli_export_visio,
+    cli_bootstrap,
+    cli_profile,
+    cli_find,
+    cli_skill_info,
+    cli_doc_search,
 )
 from virtuoso_bridge.env import set_runtime_env_file
 
@@ -68,22 +78,14 @@ def build_parser():
     sp_auto.add_argument("-p", "--profile", default=None)
     sp_auto.add_argument("--env", default=None)
 
-    # -- exec ---
-    sp_exec = subparsers.add_parser("exec", help="Execute SKILL expression")
+    # -- exec (vbridge-specific alias, kept for backward compat) ---
+    sp_exec = subparsers.add_parser("exec", help="Execute SKILL expression (vbridge alias)")
     sp_exec.add_argument("expression", nargs="?", default="-",
                          help="SKILL code (use '-' or omit for stdin)")
     sp_exec.add_argument("--timeout", type=int, default=30)
     sp_exec.add_argument("--json", action="store_true", dest="json_output")
     sp_exec.add_argument("-p", "--profile", default=None)
     sp_exec.add_argument("--env", default=None)
-
-    # -- load ---
-    sp_load = subparsers.add_parser("load", help="Load .il file in Virtuoso")
-    sp_load.add_argument("path", help="Path to .il file")
-    sp_load.add_argument("--verbose", action="store_true")
-    sp_load.add_argument("--timeout", type=int, default=60)
-    sp_load.add_argument("-p", "--profile", default=None)
-    sp_load.add_argument("--env", default=None)
 
     # -- sch ---
     sp_sch = subparsers.add_parser("sch", help="Schematic operations")
@@ -176,32 +178,94 @@ def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
 
+    _CLI_PROFILE[0] = None
+    set_runtime_env_file(getattr(args, "env", None))
+
+    if getattr(args, "bind_venv", False):
+        profile_arg = getattr(args, "profile", None)
+        if not profile_arg:
+            parser.error("--bind-venv requires -p/--profile")
+        from virtuoso_bridge.profile import bind_venv_profile
+        try:
+            bind_venv_profile(profile_arg)
+        except Exception as exc:
+            parser.error(str(exc))
+
+    from virtuoso_bridge.profile import resolve_profile
+    profile = resolve_profile(getattr(args, "profile", None))
+    if profile is not None:
+        _CLI_PROFILE[0] = profile
+
     upstream_dispatch = {
         "init": lambda: cli_init(
             remote=getattr(args, "remote", None),
             jump=getattr(args, "jump", None),
             force=getattr(args, "force", False),
         ),
+        "profile": lambda: cli_profile(
+            action=getattr(args, "profile_action"),
+            profile=getattr(args, "profile", None),
+        ),
         "start": _patched_cli_start,
         "stop": cli_stop,
         "restart": cli_restart,
         "status": cli_status,
         "license": cli_license,
+        "load": lambda: cli_load(
+            file=getattr(args, "file"),
+            timeout=getattr(args, "timeout", 60),
+            quiet=getattr(args, "quiet", False),
+        ),
+        "eval": lambda: cli_eval(
+            skill=getattr(args, "skill", None),
+            stdin=getattr(args, "stdin", False),
+            timeout=getattr(args, "timeout", 60),
+            quiet=getattr(args, "quiet", False),
+        ),
         "dismiss-dialog": cli_dismiss_dialog,
+        "list-windows": lambda: cli_list_windows(
+            json_output=getattr(args, "json", False),
+            top_level=getattr(args, "top_level", False),
+        ),
+        "dismiss-window": lambda: cli_dismiss_window(
+            window_id=getattr(args, "window_id"),
+            action=getattr(args, "action", "enter"),
+        ),
+        "bootstrap": lambda: cli_bootstrap(
+            window_id=getattr(args, "window"),
+            timeout=getattr(args, "timeout", 12),
+        ),
         "screenshot": cli_screenshot,
         "windows": cli_windows,
         "snapshot": cli_snapshot,
         "export-visio": cli_export_visio,
+        "skill-find": lambda: cli_find(
+            query=getattr(args, "query", None),
+            mode=getattr(args, "mode", "fuzzy"),
+            limit=getattr(args, "limit", 50),
+            include_desc=getattr(args, "include_desc", False),
+            json_output=getattr(args, "json", False),
+        ),
+        "skill-info": lambda: cli_skill_info(
+            func_name=getattr(args, "func_name", None) or "",
+            json_output=getattr(args, "json", False),
+        ),
+        "doc-search": lambda: cli_doc_search(
+            query=getattr(args, "query", None),
+            doc_roots=getattr(args, "doc_root", []),
+            limit=getattr(args, "limit", 10),
+            list_roots=getattr(args, "list_roots", False),
+            json_output=getattr(args, "json", False),
+            rebuild_index=getattr(args, "rebuild_index", False),
+        ),
     }
-
-    profile = getattr(args, "profile", None)
-    if profile is not None:
-        _CLI_PROFILE[0] = profile
-    set_runtime_env_file(getattr(args, "env", None))
 
     screenshot_target = getattr(args, "target", None)
     if screenshot_target is not None:
         _SCREENSHOT_TARGET[0] = screenshot_target
+    screenshot_output = getattr(args, "output", None)
+    if screenshot_output is not None:
+        _SCREENSHOT_OUTPUT[0] = screenshot_output
     if args.command == "snapshot":
         for k in _SNAPSHOT_OPTS:
             v = getattr(args, k, None)
@@ -226,11 +290,6 @@ def main(argv: list[str] | None = None) -> int:
         from vbridge.exec_cmd import run
         return run(args.expression, timeout=args.timeout,
                    json_output=args.json_output, profile=profile)
-
-    if command == "load":
-        from vbridge.load_cmd import run
-        return run(args.path, verbose=args.verbose,
-                   timeout=args.timeout, profile=profile)
 
     if command == "sch":
         return _handle_sch(args, profile)

@@ -12,14 +12,14 @@ binaries:
   - name: virtuoso-bridge
     entry: entry_virtuoso_bridge.py
     onefile: true
-    hidden_imports: [pydantic, dotenv, yaml]
+    hidden_imports: [pydantic, dotenv, yaml, eval_type_backport]
     collect_submodules: [virtuoso_bridge]
     collect_all: [virtuoso_bridge]
 
   - name: vbridge
     entry: entry_vbridge.py
     onefile: true
-    hidden_imports: [pydantic, dotenv, yaml]
+    hidden_imports: [pydantic, dotenv, yaml, eval_type_backport]
     collect_submodules: [virtuoso_bridge, vbridge]
     collect_all: [virtuoso_bridge]
 

@@ -14,6 +14,7 @@ from virtuoso_bridge.virtuoso.schematic.ops import (
     schematic_create_wire,
     schematic_create_wire_label,
 )
+from virtuoso_bridge.virtuoso.ops import escape_skill_string
 
 _REQUIRED = {
     "add-inst": ["lib", "cell"],
@@ -23,6 +24,7 @@ _REQUIRED = {
     "add-pin": ["name"],
     "add-wire": ["points"],
     "add-label": ["text"],
+    "set-param": ["inst", "params"],
 }
 
 
@@ -74,6 +76,25 @@ def _dispatch_op(sch: Any, op: dict) -> None:
             justification="lowerLeft",
             rotation="R0",
         ))
+    elif kind == "set-param":
+        e_inst = escape_skill_string(op["inst"])
+        params = op["params"]
+        if not isinstance(params, dict) or not params:
+            raise ValueError("set-param 'params' must be a non-empty dict")
+        lines = [
+            f'let((inst cdf)',
+            f'inst = car(setof(i cv~>instances i~>name == "{e_inst}"))',
+            f'unless(inst error("Instance %s not found" "{e_inst}"))',
+            f'cdf = cdfGetInstCDF(inst)',
+        ]
+        for p_name, p_val in params.items():
+            e_p = escape_skill_string(p_name)
+            e_v = escape_skill_string(str(p_val))
+            lines.append(f'cdfFindParamByName(cdf "{e_p}")~>value = "{e_v}"')
+            if p_name == "w":
+                lines.append(f'when(cdfFindParamByName(cdf "wf") cdfFindParamByName(cdf "wf")~>value = "{e_v}")')
+        lines.append(")")
+        sch.add("\n".join(lines))
 
 
 def run_batch(lib: str, cell: str, ops_json: str, *,
@@ -135,7 +156,7 @@ def run_list_instances(lib: str, cell: str, *, view: str = "schematic",
     instances = data.get("instances", [])
     for inst in instances:
         name = inst.get("name", "?")
-        cell_name = inst.get("cellName", "?")
+        cell_name = inst.get("cell", "?")
         xy = inst.get("xy", [0, 0])
         print(f"  {name:<8s}  {cell_name:<15s}  ({xy[0]:.2f}, {xy[1]:.2f})")
     print(f"Total: {len(instances)} instances")
@@ -172,7 +193,6 @@ def run_param(lib: str, cell: str, inst: str, param: str, value: str, *,
               view: str = "schematic", timeout: int = 30,
               profile: str | None = None) -> int:
     from vbridge.env_helpers import get_client
-    from virtuoso_bridge.virtuoso.ops import escape_skill_string
 
     e_lib = escape_skill_string(lib)
     e_cell = escape_skill_string(cell)

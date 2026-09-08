@@ -311,33 +311,51 @@ def _handle_symbol(args, profile: str | None) -> int:
     return 1
 
 
-def _load_with_local_fallback(*, file: str, timeout: int = 60,
-                              quiet: bool = False) -> int:
-    """Try upstream cli_load; fall back to exec load() for local mode."""
-    try:
-        return cli_load(file=file, timeout=timeout, quiet=quiet)
-    except Exception as e:
-        if "local mode" not in str(e).lower() and "ssh" not in str(e).lower():
-            raise
+def _is_local_mode() -> bool:
+    """Check if bridge is configured for local mode (no SSH needed).
+
+    Reads env vars already loaded by main() — does not re-load .env.
+    """
+    import os
+    from virtuoso_bridge.transport.tunnel import _is_localhost
+    profile = _CLI_PROFILE[0]
+    suffix = f"_{profile}" if profile else ""
+    host = os.getenv(f"VB_REMOTE_HOST{suffix}", "").strip()
+    if not host:
+        host = os.getenv(f"VB_DAEMON_HOST{suffix}", "").strip()
+    return _is_localhost(host) if host else False
+
+
+def _load_local(file: str, timeout: int, quiet: bool) -> int:
+    """Load .il via SKILL load() — no SSH upload needed."""
     import json
     from pathlib import Path
-    from virtuoso_bridge.models import ExecutionStatus
     p = Path(file)
     if not p.is_file():
         print(f"ERROR: file not found: {p}", file=sys.stderr)
         return 2
     from vbridge.env_helpers import get_client
+    from virtuoso_bridge.virtuoso.ops import escape_skill_string
     client = get_client(profile=_CLI_PROFILE[0], timeout=timeout)
-    skill = f'load("{p.resolve()}")'
-    result = client.execute_skill(skill, timeout=timeout)
+    abs_path = str(p.resolve())
+    result = client.execute_skill(
+        f'load("{escape_skill_string(abs_path)}")', timeout=timeout,
+    )
     if not quiet:
-        print(json.dumps(
-            {"status": result.status.value if hasattr(result.status, "value") else str(result.status),
-             "output": result.output or "",
-             "errors": list(result.errors) if result.errors else []},
-            indent=2, ensure_ascii=False,
-        ))
+        print(json.dumps({
+            "status": result.status.value if hasattr(result.status, "value") else str(result.status),
+            "output": result.output or "",
+            "errors": list(result.errors) if result.errors else [],
+        }, indent=2, ensure_ascii=False))
     return 0 if result.ok else 1
+
+
+def _load_with_local_fallback(*, file: str, timeout: int = 60,
+                              quiet: bool = False) -> int:
+    """Use direct SKILL load() in local mode; upstream cli_load otherwise."""
+    if _is_local_mode():
+        return _load_local(file, timeout, quiet)
+    return cli_load(file=file, timeout=timeout, quiet=quiet)
 
 
 def main(argv: list[str] | None = None) -> int:

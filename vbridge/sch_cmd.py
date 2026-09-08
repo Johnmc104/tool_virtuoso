@@ -174,21 +174,47 @@ def run_param(lib: str, cell: str, inst: str, param: str, value: str, *,
     from vbridge.env_helpers import get_client
     from virtuoso_bridge.virtuoso.ops import escape_skill_string
 
-    client = get_client(profile=profile, timeout=timeout)
+    e_lib = escape_skill_string(lib)
+    e_cell = escape_skill_string(cell)
+    e_view = escape_skill_string(view)
+    e_inst = escape_skill_string(inst)
+    e_param = escape_skill_string(param)
+    e_value = escape_skill_string(value)
+
+    wf_sync = ""
+    if param == "w":
+        wf_sync = (
+            f'when(cdfFindParamByName(cdf "wf")\n'
+            f'  let((nf_p nf_val)\n'
+            f'    nf_p = cdfFindParamByName(cdf "nf")\n'
+            f'    nf_val = if(nf_p atoi(nf_p~>value || "1") 1)\n'
+            f'    cdfFindParamByName(cdf "wf")~>value = "{e_value}"\n'
+            f'  )\n'
+            f')\n'
+        )
+
     skill = (
-        f'let((cv inst)\n'
-        f'cv = dbOpenCellViewByType("{escape_skill_string(lib)}" '
-        f'"{escape_skill_string(cell)}" "{escape_skill_string(view)}" "" "a")\n'
-        f'inst = dbFindInstByName(cv "{escape_skill_string(inst)}")\n'
-        f'unless(inst error("Instance %s not found" "{escape_skill_string(inst)}"))\n'
-        f'cdfSetInstParam(inst "{escape_skill_string(param)}" "{escape_skill_string(value)}")\n'
+        f'let((cv inst cdf)\n'
+        f'cv = dbOpenCellViewByType("{e_lib}" "{e_cell}" "{e_view}" "" "a")\n'
+        f'inst = car(setof(i cv~>instances i~>name == "{e_inst}"))\n'
+        f'unless(inst dbClose(cv) error("Instance %s not found" "{e_inst}"))\n'
+        f'cdf = cdfGetInstCDF(inst)\n'
+        f'unless(cdfFindParamByName(cdf "{e_param}")\n'
+        f'  dbClose(cv) error("Parameter %s not found on %s" "{e_param}" "{e_inst}"))\n'
+        f'cdfFindParamByName(cdf "{e_param}")~>value = "{e_value}"\n'
+        f'{wf_sync}'
         f'dbSave(cv)\n'
         f'dbClose(cv)\n'
         f't)'
     )
+
+    client = get_client(profile=profile, timeout=timeout)
     result = client.execute_skill(skill, timeout=timeout)
     if result.ok:
-        print(f"[sch] Set {inst}.{param} = {value}")
+        msg = f"[sch] Set {inst}.{param} = {value}"
+        if wf_sync:
+            msg += f" (wf synced)"
+        print(msg)
     else:
         print(f"[sch] error: {result.output}", file=sys.stderr)
         if result.errors:

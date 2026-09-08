@@ -311,6 +311,35 @@ def _handle_symbol(args, profile: str | None) -> int:
     return 1
 
 
+def _load_with_local_fallback(*, file: str, timeout: int = 60,
+                              quiet: bool = False) -> int:
+    """Try upstream cli_load; fall back to exec load() for local mode."""
+    try:
+        return cli_load(file=file, timeout=timeout, quiet=quiet)
+    except Exception as e:
+        if "local mode" not in str(e).lower() and "ssh" not in str(e).lower():
+            raise
+    import json
+    from pathlib import Path
+    from virtuoso_bridge.models import ExecutionStatus
+    p = Path(file)
+    if not p.is_file():
+        print(f"ERROR: file not found: {p}", file=sys.stderr)
+        return 2
+    from vbridge.env_helpers import get_client
+    client = get_client(profile=_CLI_PROFILE[0], timeout=timeout)
+    skill = f'load("{p.resolve()}")'
+    result = client.execute_skill(skill, timeout=timeout)
+    if not quiet:
+        print(json.dumps(
+            {"status": result.status.value if hasattr(result.status, "value") else str(result.status),
+             "output": result.output or "",
+             "errors": list(result.errors) if result.errors else []},
+            indent=2, ensure_ascii=False,
+        ))
+    return 0 if result.ok else 1
+
+
 def main(argv: list[str] | None = None) -> int:
     _make_stdio_safe()
     parser = build_parser()
@@ -349,7 +378,7 @@ def main(argv: list[str] | None = None) -> int:
         "restart": cli_restart,
         "status": cli_status,
         "license": cli_license,
-        "load": lambda: cli_load(
+        "load": lambda: _load_with_local_fallback(
             file=getattr(args, "file"),
             timeout=getattr(args, "timeout", 60),
             quiet=getattr(args, "quiet", False),

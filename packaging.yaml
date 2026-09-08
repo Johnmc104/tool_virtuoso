@@ -15,6 +15,8 @@ binaries:
     hidden_imports: [pydantic, dotenv, yaml, eval_type_backport]
     collect_submodules: [virtuoso_bridge]
     collect_all: [virtuoso_bridge]
+    add_data:
+      - "src/virtuoso_bridge/virtuoso/schematic/cdf_param_filters.yaml:virtuoso_bridge/virtuoso/schematic/"
 
   - name: vbridge
     entry: entry_vbridge.py
@@ -22,6 +24,8 @@ binaries:
     hidden_imports: [pydantic, dotenv, yaml, eval_type_backport]
     collect_submodules: [virtuoso_bridge, vbridge]
     collect_all: [virtuoso_bridge]
+    add_data:
+      - "src/virtuoso_bridge/virtuoso/schematic/cdf_param_filters.yaml:virtuoso_bridge/virtuoso/schematic/"
 
 dependencies:
   pyproject_toml: virtuoso-bridge-lite/pyproject.toml

@@ -262,14 +262,10 @@ def gen_project_stage(cfg: dict, offline: bool = False):
                 f"{pip_run_prefix} \\",
                 f"    {pip_install_base}{pre}",
             ]
-        py_cmd = (
-            "import tomllib; print(' '.join("
-            "tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))"
-        )
         lines += [
             f"{pip_run_prefix} \\",
-            f'    {pip_install_base}\\',
-            f'    $(${{PYTHON}} -c "{py_cmd}")',
+            f"    ${{PYTHON}} -c \"import tomllib; f=open('/tmp/_deps.txt','w'); [print(d,file=f) for d in tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']]; f.close()\" && \\",
+            f"    {pip_install_base}-r /tmp/_deps.txt",
         ]
     elif deps.get("requirements_files"):
         lines.append("")

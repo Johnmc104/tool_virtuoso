@@ -113,11 +113,17 @@ submodule 已更新到 v0.8.0。下次构建时 `make pre-package` 会自动同�
 - 检查上游是否新增了 CLI 命令（需要加入 dispatch）
 - 检查上游是否修改了已绑定命令的签名
 
-## 5. 下一步建议
+## 5. 阶段 7 更新 (2026-09-08)
+
+### 已完成
+- [x] 提交 packaging/common/ 离线构建功能 (c48d60c)
+- [x] 添加 tests/test_imports.py 上游兼容性验证 (ea86817, 10 tests all pass)
+- [x] lib/ 确认为构建产物（.gitignore），make pre-package 自动同步
+- [x] cli.py 清理未使用导入、sch 子命令 --env 一致性修复
+
+### 剩余可选
 
 | 优先级 | 任务 | 说明 |
 |---|---|---|
-| 可选 | 提交 packaging/common/ 改动 | 离线构建功能，独立于 vbridge |
-| 可选 | 构建并测试二进制 | `make build` 验证 PyInstaller 打包 |
 | 可选 | 添加 Maestro CLI | `maestro run/read` — 上游 API 已就绪 |
 | 可选 | 添加 Layout CLI | `layout export-gds` — 上游 API 已就绪 |

@@ -140,3 +140,58 @@ def run_list_instances(lib: str, cell: str, *, view: str = "schematic",
         print(f"  {name:<8s}  {cell_name:<15s}  ({xy[0]:.2f}, {xy[1]:.2f})")
     print(f"Total: {len(instances)} instances")
     return 0
+
+
+def run_read(lib: str, cell: str, *, json_output: bool = False,
+             timeout: int = 30, profile: str | None = None) -> int:
+    from vbridge.env_helpers import get_client
+
+    client = get_client(profile=profile, timeout=timeout)
+    data = client.schematic.read(lib, cell, include_positions=True, timeout=timeout)
+
+    if json_output:
+        print(json.dumps(data, indent=2, ensure_ascii=False, default=str))
+    else:
+        instances = data.get("instances", [])
+        pins = data.get("pins", {})
+        nets = data.get("nets", {})
+        print(f"Schematic: {lib}/{cell}")
+        print(f"\nInstances ({len(instances)}):")
+        for inst in instances:
+            params = inst.get("params", {})
+            param_str = " ".join(f"{k}={v}" for k, v in params.items()) if params else ""
+            print(f"  {inst.get('name','?'):<10s} {inst.get('cell','?'):<15s} {param_str}")
+        print(f"\nPins ({len(pins)}):")
+        for name, info in pins.items():
+            print(f"  {name:<15s} {info.get('direction','?')}")
+        print(f"\nNets: {len(nets)}")
+    return 0
+
+
+def run_param(lib: str, cell: str, inst: str, param: str, value: str, *,
+              view: str = "schematic", timeout: int = 30,
+              profile: str | None = None) -> int:
+    from vbridge.env_helpers import get_client
+    from virtuoso_bridge.virtuoso.ops import escape_skill_string
+
+    client = get_client(profile=profile, timeout=timeout)
+    skill = (
+        f'let((cv inst)\n'
+        f'cv = dbOpenCellViewByType("{escape_skill_string(lib)}" '
+        f'"{escape_skill_string(cell)}" "{escape_skill_string(view)}" "" "a")\n'
+        f'inst = dbFindInstByName(cv "{escape_skill_string(inst)}")\n'
+        f'unless(inst error("Instance %s not found" "{escape_skill_string(inst)}"))\n'
+        f'cdfSetInstParam(inst "{escape_skill_string(param)}" "{escape_skill_string(value)}")\n'
+        f'dbSave(cv)\n'
+        f'dbClose(cv)\n'
+        f't)'
+    )
+    result = client.execute_skill(skill, timeout=timeout)
+    if result.ok:
+        print(f"[sch] Set {inst}.{param} = {value}")
+    else:
+        print(f"[sch] error: {result.output}", file=sys.stderr)
+        if result.errors:
+            for e in result.errors:
+                print(f"  {e}", file=sys.stderr)
+    return 0 if result.ok else 1

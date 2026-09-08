@@ -165,73 +165,95 @@ def _launch_virtuoso(setup_path: str) -> subprocess.Popen | None:
         return None
 
 
-def startup_sequence(timeout: float = 60) -> int:
+def _emit_status(port: int, setup_path: str | None, ready: bool,
+                  json_output: bool) -> None:
+    """Print machine-readable status if --json, otherwise nothing."""
+    if not json_output:
+        return
+    import json
+    print(json.dumps({
+        "ready": ready,
+        "port": port,
+        "setup_path": setup_path or "",
+    }, ensure_ascii=False))
+
+
+def startup_sequence(timeout: float = 60, *, wait: bool = False,
+                     json_output: bool = False) -> int:
     """One-click startup. No prior init required.
 
     Flow:
       1. Check state: if daemon responding, done (no duplicate)
       2. Check setup files: if missing, call `virtuoso-bridge start`
       3. If virtuoso on PATH + X11 available: launch GUI
-      4. Wait for daemon
+      4. Wait for daemon (--wait blocks until fully ready)
     """
-    port = _get_port()
+    state = _read_state()
+    port = int(state["port"]) if state and state.get("port") else \
+        int(os.environ.get("VB_LOCAL_PORT",
+            os.environ.get("VB_REMOTE_PORT", "65432")))
+    setup_path = state.get("setup_path") if state else None
+    if setup_path and not Path(setup_path).is_file():
+        setup_path = None
 
-    # --- State check: prevent duplicate ---
     if is_daemon_responding(port):
         print(f"[auto-start] Daemon already responding on port {port}.")
+        _emit_status(port, setup_path, True, json_output)
         return 0
 
-    # --- Ensure setup files exist (call lower layer) ---
-    setup_path = _get_setup_path()
     if not setup_path:
         print("[auto-start] Setup files missing, running bridge start...")
         rc = _run_bridge_start()
         if rc != 0:
             print("[auto-start] bridge start failed")
             return 1
-        setup_path = _get_setup_path()
-        if not setup_path:
+        state = _read_state()
+        port = int(state["port"]) if state and state.get("port") else port
+        setup_path = state.get("setup_path") if state else None
+        if not setup_path or not Path(setup_path).is_file():
             setup_path = _ensure_setup_il()
     else:
         print(f"[auto-start] Setup: {setup_path}")
 
-    # Re-read port after start (may have changed)
-    port = _get_port()
-
     if not setup_path:
         print("[auto-start] Bridge started but setup file not generated")
+        _emit_status(port, None, False, json_output)
         return 0
 
-    # Check again after start
     if is_daemon_responding(port):
         print(f"[auto-start] Daemon responding on port {port}.")
+        _emit_status(port, setup_path, True, json_output)
         return 0
 
-    # --- Patch for frozen binary ---
     if getattr(sys, "frozen", False):
         from vbridge._frozen_patches import patch_setup_for_frozen
         patch_setup_for_frozen(setup_path)
 
-    # --- Try to launch Virtuoso ---
     vbin = shutil.which("virtuoso")
     if not vbin:
-        print(f"[auto-start] 'virtuoso' not on PATH")
+        print("[auto-start] 'virtuoso' not on PATH")
         print(f"  Load in CIW: load(\"{setup_path}\")")
+        _emit_status(port, setup_path, False, json_output)
         return 0
 
     if not ensure_display():
-        print(f"[auto-start] No X11 display available")
+        print("[auto-start] No X11 display available")
         print(f"  Load in CIW: load(\"{setup_path}\")")
+        _emit_status(port, setup_path, False, json_output)
         return 0
 
     if _is_virtuoso_running():
         print("[auto-start] Virtuoso already running.")
         if is_daemon_responding(port):
             print("[auto-start] Ready!")
+            _emit_status(port, setup_path, True, json_output)
             return 0
-        print(f"  Waiting for CIW to load setup script...")
+        if wait:
+            ready = _wait_for_daemon(port, timeout=timeout)
+            _emit_status(port, setup_path, ready, json_output)
+            return 0 if ready else 1
         print(f"  Or manually: load(\"{setup_path}\")")
-        print(f"  Check: vbridge status")
+        _emit_status(port, setup_path, False, json_output)
         return 0
 
     print("[auto-start] Launching Virtuoso...")
@@ -239,7 +261,6 @@ def startup_sequence(timeout: float = 60) -> int:
     if not proc:
         return 1
 
-    # Verify process is alive after brief settle
     time.sleep(2)
     if proc.poll() is not None:
         print(f"[auto-start] Virtuoso exited immediately (code={proc.returncode})")
@@ -247,13 +268,23 @@ def startup_sequence(timeout: float = 60) -> int:
 
     print(f"[auto-start] Virtuoso PID {proc.pid} started.")
 
-    # Quick check — Virtuoso cold start is slow, don't block forever
+    if wait:
+        ready = _wait_for_daemon(port, timeout=timeout)
+        if ready:
+            print("[auto-start] Ready!")
+        else:
+            print("[auto-start] Timed out waiting for daemon.")
+        _emit_status(port, setup_path, ready, json_output)
+        return 0 if ready else 1
+
     if _wait_for_daemon(port, timeout=min(timeout, 15)):
         print("[auto-start] Ready!")
+        _emit_status(port, setup_path, True, json_output)
         return 0
 
-    print(f"[auto-start] Virtuoso is starting (may take 1-2 minutes).")
+    print("[auto-start] Virtuoso is starting (may take 1-2 minutes).")
     print(f"  Check: vbridge status")
+    _emit_status(port, setup_path, False, json_output)
     return 0
 
 

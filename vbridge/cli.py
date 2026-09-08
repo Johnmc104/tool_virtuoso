@@ -75,6 +75,10 @@ def build_parser():
         "auto-start", help="One-click: start bridge + launch Virtuoso + wait")
     sp_auto.add_argument("--timeout", type=float, default=60,
                          help="Max seconds to wait for daemon")
+    sp_auto.add_argument("--wait", action="store_true",
+                         help="Block until daemon is fully ready")
+    sp_auto.add_argument("--json", action="store_true", dest="json_output",
+                         help="Output machine-readable JSON status")
     sp_auto.add_argument("-p", "--profile", default=None)
     sp_auto.add_argument("--env", default=None)
 
@@ -112,6 +116,73 @@ def build_parser():
     sp_list.add_argument("--view", default="schematic")
     sp_list.add_argument("--timeout", type=int, default=30)
     sp_list.add_argument("-p", "--profile", default=None)
+
+    sp_read = sch_sub.add_parser("read", help="Read schematic structure")
+    sp_read.add_argument("lib"); sp_read.add_argument("cell")
+    sp_read.add_argument("--json", action="store_true", dest="json_output")
+    sp_read.add_argument("--timeout", type=int, default=30)
+    sp_read.add_argument("-p", "--profile", default=None)
+
+    sp_param = sch_sub.add_parser("param", help="Set instance parameter")
+    sp_param.add_argument("lib"); sp_param.add_argument("cell")
+    sp_param.add_argument("inst", help="Instance name")
+    sp_param.add_argument("param", help="Parameter name (e.g. w, l, nf)")
+    sp_param.add_argument("value", help="Parameter value")
+    sp_param.add_argument("--view", default="schematic")
+    sp_param.add_argument("--timeout", type=int, default=30)
+    sp_param.add_argument("-p", "--profile", default=None)
+
+    # -- sim ---
+    sp_sim = subparsers.add_parser("sim", help="Spectre simulation")
+    sim_sub = sp_sim.add_subparsers(dest="sim_command")
+
+    sp_sim_run = sim_sub.add_parser("run", help="Run Spectre simulation")
+    sp_sim_run.add_argument("netlist", help="Path to .scs netlist")
+    sp_sim_run.add_argument("-o", "--output", default=None, help="Output directory")
+    sp_sim_run.add_argument("--mode", default="default",
+                            choices=["default", "aps", "ax", "cx", "mx", "lx"],
+                            help="Spectre execution mode")
+    sp_sim_run.add_argument("--timeout", type=int, default=600)
+    sp_sim_run.add_argument("-p", "--profile", default=None)
+    sp_sim_run.add_argument("--env", default=None)
+
+    sp_sim_result = sim_sub.add_parser("result", help="Parse simulation results")
+    sp_sim_result.add_argument("dir", help="Raw PSF output directory")
+    sp_sim_result.add_argument("--signal", default=None, help="Query specific signal")
+    sp_sim_result.add_argument("--json", action="store_true", dest="json_output")
+
+    sp_sim_lic = sim_sub.add_parser("license", help="Check Spectre license")
+    sp_sim_lic.add_argument("-p", "--profile", default=None)
+    sp_sim_lic.add_argument("--env", default=None)
+
+    # -- lib ---
+    sp_lib = subparsers.add_parser("lib", help="Library management")
+    lib_sub = sp_lib.add_subparsers(dest="lib_command")
+
+    sp_lib_list = lib_sub.add_parser("list", help="List libraries")
+    sp_lib_list.add_argument("--json", action="store_true", dest="json_output")
+    sp_lib_list.add_argument("--timeout", type=int, default=30)
+    sp_lib_list.add_argument("-p", "--profile", default=None)
+    sp_lib_list.add_argument("--env", default=None)
+
+    sp_lib_create = lib_sub.add_parser("create", help="Create library")
+    sp_lib_create.add_argument("name", help="Library name")
+    sp_lib_create.add_argument("--path", required=True, help="Library path")
+    sp_lib_create.add_argument("--tech-lib", default=None, help="Technology library")
+    sp_lib_create.add_argument("--timeout", type=int, default=60)
+    sp_lib_create.add_argument("-p", "--profile", default=None)
+    sp_lib_create.add_argument("--env", default=None)
+
+    # -- symbol ---
+    sp_sym = subparsers.add_parser("symbol", help="Symbol operations")
+    sym_sub = sp_sym.add_subparsers(dest="symbol_command")
+
+    sp_sym_gen = sym_sub.add_parser("generate", help="Generate symbol from schematic")
+    sp_sym_gen.add_argument("lib"); sp_sym_gen.add_argument("cell")
+    sp_sym_gen.add_argument("--overwrite", action="store_true")
+    sp_sym_gen.add_argument("--timeout", type=int, default=60)
+    sp_sym_gen.add_argument("-p", "--profile", default=None)
+    sp_sym_gen.add_argument("--env", default=None)
 
     # -- daemon (internal, called by Virtuoso IPC) ---
     sp_daemon = subparsers.add_parser("daemon", help="Run RAMIC bridge daemon")
@@ -151,7 +222,7 @@ def _run_daemon(host: str, port: int) -> int:
 def _handle_sch(args, profile: str | None) -> int:
     sub = getattr(args, "sch_command", None)
     if not sub:
-        print("usage: vbridge sch {batch,create,save,list} ...")
+        print("usage: vbridge sch {batch,create,save,list,read,param} ...")
         return 1
 
     if sub == "batch":
@@ -169,7 +240,70 @@ def _handle_sch(args, profile: str | None) -> int:
         from vbridge.sch_cmd import run_list_instances
         return run_list_instances(args.lib, args.cell, view=args.view,
                                   timeout=args.timeout, profile=profile)
+    if sub == "read":
+        from vbridge.sch_cmd import run_read
+        return run_read(args.lib, args.cell,
+                        json_output=args.json_output,
+                        timeout=args.timeout, profile=profile)
+    if sub == "param":
+        from vbridge.sch_cmd import run_param
+        return run_param(args.lib, args.cell, args.inst, args.param, args.value,
+                         view=args.view, timeout=args.timeout, profile=profile)
     print(f"unknown sch subcommand: {sub}")
+    return 1
+
+
+def _handle_sim(args, profile: str | None) -> int:
+    sub = getattr(args, "sim_command", None)
+    if not sub:
+        print("usage: vbridge sim {run,result,license} ...")
+        return 1
+
+    if sub == "run":
+        from vbridge.sim_cmd import run_sim
+        return run_sim(args.netlist, output_dir=args.output,
+                       mode=args.mode, timeout=args.timeout,
+                       profile=profile)
+    if sub == "result":
+        from vbridge.sim_cmd import run_result
+        return run_result(args.dir, signal=args.signal,
+                          json_output=args.json_output)
+    if sub == "license":
+        from vbridge.sim_cmd import run_license
+        return run_license(profile=profile)
+    print(f"unknown sim subcommand: {sub}")
+    return 1
+
+
+def _handle_lib(args, profile: str | None) -> int:
+    sub = getattr(args, "lib_command", None)
+    if not sub:
+        print("usage: vbridge lib {list,create} ...")
+        return 1
+
+    if sub == "list":
+        from vbridge.lib_cmd import run_list
+        return run_list(json_output=args.json_output,
+                        timeout=args.timeout, profile=profile)
+    if sub == "create":
+        from vbridge.lib_cmd import run_create
+        return run_create(args.name, args.path, tech_lib=args.tech_lib,
+                          timeout=args.timeout, profile=profile)
+    print(f"unknown lib subcommand: {sub}")
+    return 1
+
+
+def _handle_symbol(args, profile: str | None) -> int:
+    sub = getattr(args, "symbol_command", None)
+    if not sub:
+        print("usage: vbridge symbol {generate} ...")
+        return 1
+
+    if sub == "generate":
+        from vbridge.symbol_cmd import run_generate
+        return run_generate(args.lib, args.cell, overwrite=args.overwrite,
+                            timeout=args.timeout, profile=profile)
+    print(f"unknown symbol subcommand: {sub}")
     return 1
 
 
@@ -284,7 +418,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if command == "auto-start":
         from vbridge.auto_start import startup_sequence
-        return startup_sequence(timeout=args.timeout)
+        return startup_sequence(
+            timeout=args.timeout,
+            wait=getattr(args, "wait", False),
+            json_output=getattr(args, "json_output", False),
+        )
 
     if command == "exec":
         from vbridge.exec_cmd import run
@@ -293,6 +431,15 @@ def main(argv: list[str] | None = None) -> int:
 
     if command == "sch":
         return _handle_sch(args, profile)
+
+    if command == "sim":
+        return _handle_sim(args, profile)
+
+    if command == "lib":
+        return _handle_lib(args, profile)
+
+    if command == "symbol":
+        return _handle_symbol(args, profile)
 
     if command == "daemon":
         return _run_daemon(args.host, args.port)

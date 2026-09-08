@@ -35,53 +35,111 @@ vbridge auto-start
 3. 启动 Virtuoso（带 `-replay` 加载脚本）
 4. 等待 daemon 就绪
 
+Agent 推荐用法（阻塞等待 + JSON 输出）：
+
+```bash
+vbridge auto-start --wait --json
+```
+
 ## 4. 执行 SKILL
 
 ```bash
-# 单行表达式
+# 单行表达式（vbridge 扩展，纯文本输出）
 vbridge exec "geGetEditCellView()~>cellName"
 
 # 从 stdin 读取
 echo 'println("hello")' | vbridge exec
 
-# 查询库列表
-vbridge exec 'ddGetLibList()~>name'
-```
+# 上游原生命令（JSON 输出）
+vbridge eval 'getCurrentTime()'
 
-## 5. 加载 IL 文件
-
-```bash
+# 加载 IL 文件（JSON 输出）
 vbridge load ~/scripts/my_setup.il
 ```
 
-## 6. 查看状态
+## 5. 库管理
 
 ```bash
-vbridge status
+# 列出所有库
+vbridge lib list
+vbridge lib list --json
+
+# 创建库
+vbridge lib create myLib --path /home/user/myLib --tech-lib tsmc65
 ```
 
-## 7. 原理图操作
+## 6. 原理图操作
 
 ```bash
 # 创建/打开 cellview
 vbridge sch create myLib myCell
 
-# 保存并检查
-vbridge sch save
+# 读取原理图结构
+vbridge sch read myLib myCell --json
 
 # 列出实例
 vbridge sch list myLib myCell
+
+# 设置实例参数
+vbridge sch param myLib myCell M0 w 1u
+vbridge sch param myLib myCell M0 l 60n
+
+# 批量操作（JSON stdin）
+echo '[{"op":"add-inst","lib":"analogLib","cell":"nmos4","name":"M1","x":0,"y":0}]' | \
+  vbridge sch batch myLib myCell
+
+# 保存并检查
+vbridge sch save
 ```
 
-## Agent 集成
+## 7. 生成 Symbol
+
+```bash
+vbridge symbol generate myLib myCell
+vbridge symbol generate myLib myCell --overwrite
+```
+
+## 8. Spectre 仿真
+
+```bash
+# 运行仿真（返回 JSON 结果）
+vbridge sim run tb_inv.scs -o /tmp/sim_out --mode aps
+
+# 查看仿真结果
+vbridge sim result /tmp/sim_out/
+vbridge sim result /tmp/sim_out/ --signal VOUT --json
+
+# 检查 license
+vbridge sim license
+```
+
+## 9. 查看状态
+
+```bash
+vbridge status
+vbridge windows
+vbridge screenshot
+```
+
+## 10. Agent 集成
 
 vbridge 设计为 CLI 工具，可直接被 AI Agent 调用：
 
 ```python
-import subprocess
-result = subprocess.run(
-    ["vbridge", "exec", "ddGetLibList()~>name"],
-    capture_output=True, text=True
-)
-print(result.stdout)
+import subprocess, json
+
+# 启动并等待就绪
+r = subprocess.run(["vbridge", "auto-start", "--wait", "--json"],
+                   capture_output=True, text=True)
+status = json.loads(r.stdout)
+
+# 读取原理图
+r = subprocess.run(["vbridge", "sch", "read", "myLib", "myCell", "--json"],
+                   capture_output=True, text=True)
+schematic = json.loads(r.stdout)
+
+# 运行仿真
+r = subprocess.run(["vbridge", "sim", "run", "tb.scs", "-o", "/tmp/out"],
+                   capture_output=True, text=True)
+result = json.loads(r.stdout)
 ```

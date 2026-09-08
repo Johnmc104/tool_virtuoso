@@ -177,7 +177,7 @@ def gen_frontend_stage(cfg: dict):
     return "\n".join(lines)
 
 
-def gen_project_stage(cfg: dict):
+def gen_project_stage(cfg: dict, offline: bool = False):
     need_sqlite = cfg["components"]["sqlite"]
     project_name = cfg["project"]["name"]
     binaries = cfg["binaries"]
@@ -187,6 +187,8 @@ def gen_project_stage(cfg: dict):
     fe = cfg.get("frontend")
 
     sqlite_ld = ":/opt/sqlite/lib" if need_sqlite else ""
+
+    pip_offline = "--no-index --find-links=/tmp/wheels/ " if offline else ""
 
     lines = [
         "# ════════════════════════════════════════════════════════════",
@@ -216,23 +218,40 @@ def gen_project_stage(cfg: dict):
         verify += ' && \\\n    ${PYTHON} -c "import sqlite3; print(\'SQLite OK:\', sqlite3.sqlite_version)"'
     lines.append(f"RUN {verify}")
 
-    lines += [
-        "",
-        "ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/",
-        "ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn",
-        "ENV PIP_INDEX_URL=${PIP_INDEX_URL}",
-        "ENV PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST}",
-        "ENV NO_PROXY=pypi.tuna.tsinghua.edu.cn,*.tuna.tsinghua.edu.cn",
-        "ENV no_proxy=pypi.tuna.tsinghua.edu.cn,*.tuna.tsinghua.edu.cn",
-        "",
-        "RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \\",
-        "    ${PYTHON} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \\",
-        "    ${PYTHON} -m pip install --no-cache-dir pyinstaller==6.13.0",
-        "",
-        "WORKDIR /build",
-    ]
+    if offline:
+        lines += [
+            "",
+            "# 离线模式: 使用本地 wheels 缓存",
+            "COPY packaging/src/wheels/ /tmp/wheels/",
+            "",
+            f"RUN ${{PYTHON}} -m pip install --no-cache-dir {pip_offline}\\",
+            "    --upgrade pip setuptools wheel && \\",
+            f"    ${{PYTHON}} -m pip install --no-cache-dir {pip_offline}pyinstaller==6.13.0",
+            "",
+            "WORKDIR /build",
+        ]
+    else:
+        lines += [
+            "",
+            "ARG PIP_INDEX_URL=https://pypi.tuna.tsinghua.edu.cn/simple/",
+            "ARG PIP_TRUSTED_HOST=pypi.tuna.tsinghua.edu.cn",
+            "ENV PIP_INDEX_URL=${PIP_INDEX_URL}",
+            "ENV PIP_TRUSTED_HOST=${PIP_TRUSTED_HOST}",
+            "ENV NO_PROXY=pypi.tuna.tsinghua.edu.cn,*.tuna.tsinghua.edu.cn",
+            "ENV no_proxy=pypi.tuna.tsinghua.edu.cn,*.tuna.tsinghua.edu.cn",
+            "",
+            "RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \\",
+            "    ${PYTHON} -m pip install --no-cache-dir --upgrade pip setuptools wheel && \\",
+            "    ${PYTHON} -m pip install --no-cache-dir pyinstaller==6.13.0",
+            "",
+            "WORKDIR /build",
+        ]
 
     # 依赖安装
+    pip_run_prefix = "RUN" if offline else "RUN --mount=type=cache,target=/root/.cache/pip"
+    pip_install_base = f"${{PYTHON}} -m pip install --no-cache-dir {pip_offline}"
+    pip_env_prefix = "" if offline else "unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \\\n    "
+
     if deps.get("pyproject_toml"):
         pyproject_path = deps["pyproject_toml"]
         extra_files = deps.get("pyproject_extra_files", [])
@@ -240,16 +259,16 @@ def gen_project_stage(cfg: dict):
         lines += ["", f"COPY {' '.join(copy_items)} ./"]
         for pre in deps.get("pre_install", []):
             lines += [
-                "RUN --mount=type=cache,target=/root/.cache/pip \\",
-                f"    ${{PYTHON}} -m pip install {pre}",
+                f"{pip_run_prefix} \\",
+                f"    {pip_install_base}{pre}",
             ]
         py_cmd = (
             "import tomllib; print(' '.join("
             "tomllib.load(open('pyproject.toml','rb'))['project']['dependencies']))"
         )
         lines += [
-            "RUN --mount=type=cache,target=/root/.cache/pip \\",
-            f'    ${{PYTHON}} -m pip install \\',
+            f"{pip_run_prefix} \\",
+            f'    {pip_install_base}\\',
             f'    $(${{PYTHON}} -c "{py_cmd}")',
         ]
     elif deps.get("requirements_files"):
@@ -261,15 +280,15 @@ def gen_project_stage(cfg: dict):
         install_parts = []
         for rf in deps["requirements_files"]:
             alias = rf.replace("/", "-") if "/" in rf else rf
-            install_parts.append(f"    ${{PYTHON}} -m pip install --no-cache-dir {extra} -r {alias}".rstrip())
-        lines.append("RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \\")
+            install_parts.append(f"    {pip_install_base}{extra} -r {alias}".rstrip())
+        lines.append(f"RUN {pip_env_prefix}\\")
         lines.append(" && \\\n".join(install_parts))
     elif deps.get("pip_install"):
         pkgs = " ".join(f'"{p}"' for p in deps["pip_install"])
         lines += [
             "",
-            "RUN unset http_proxy https_proxy HTTP_PROXY HTTPS_PROXY && \\",
-            f"    ${{PYTHON}} -m pip install --no-cache-dir {pkgs}",
+            f"RUN {pip_env_prefix}\\",
+            f"    {pip_install_base}{pkgs}",
         ]
 
     # 源码复制
@@ -311,8 +330,8 @@ def gen_project_stage(cfg: dict):
     for v in vendors:
         if v.get("install"):
             lines += [
-                "RUN --mount=type=cache,target=/root/.cache/pip \\",
-                f"    ${{PYTHON}} -m pip install {v['install']}",
+                f"{pip_run_prefix} \\",
+                f"    {pip_install_base}{v['install']}",
             ]
 
     # 补丁应用
@@ -406,10 +425,11 @@ def gen_project_stage(cfg: dict):
     return "\n".join(lines)
 
 
-def generate(cfg: dict) -> str:
+def generate(cfg: dict, offline: bool = False) -> str:
+    mode_note = " [OFFLINE]" if offline else ""
     sections = [
         "# syntax=docker/dockerfile:1",
-        f"# Auto-generated Dockerfile for {cfg['project']['name']}",
+        f"# Auto-generated Dockerfile for {cfg['project']['name']}{mode_note}",
         f"# Python {cfg['python']['version']} on manylinux2014 (CentOS 7, glibc 2.17)",
         "",
     ]
@@ -429,7 +449,7 @@ def generate(cfg: dict) -> str:
         sections.append(fe_stage)
         sections.append("")
 
-    sections.append(gen_project_stage(cfg))
+    sections.append(gen_project_stage(cfg, offline=offline))
     sections.append("")
 
     return "\n".join(sections)
@@ -439,10 +459,12 @@ def main():
     parser = argparse.ArgumentParser(description="从 packaging.yaml 生成 Dockerfile")
     parser.add_argument("config", help="packaging.yaml 路径")
     parser.add_argument("-o", "--output", help="输出 Dockerfile 路径 (默认 stdout)")
+    parser.add_argument("--offline", action="store_true",
+                        help="离线模式: 使用 packaging/src/wheels/ 中的本地 pip 缓存")
     args = parser.parse_args()
 
     cfg = load_config(args.config)
-    dockerfile = generate(cfg)
+    dockerfile = generate(cfg, offline=args.offline)
 
     if args.output:
         Path(args.output).write_text(dockerfile)

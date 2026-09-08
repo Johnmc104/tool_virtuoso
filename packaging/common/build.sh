@@ -44,6 +44,10 @@ while [[ $# -gt 0 ]]; do
             MODE="local"
             shift
             ;;
+        --save-env)
+            MODE="save-env"
+            shift
+            ;;
         --proxy)
             PROXY_ARG="$2"
             export HTTP_PROXY="${2}"
@@ -55,17 +59,18 @@ while [[ $# -gt 0 ]]; do
             shift 2
             ;;
         --help|-h)
-            echo "用法: $0 [--local] [--proxy http://proxy:port] [--config packaging.yaml]"
+            echo "用法: $0 [--local] [--save-env] [--proxy http://proxy:port] [--config packaging.yaml]"
             echo ""
             echo "  (无参数)           Docker 构建（推荐，CentOS 7 兼容）"
             echo "  --local            本地构建（仅当前系统 glibc 兼容）"
+            echo "  --save-env         导出编译环境 (Docker 镜像 + pip 依赖)"
             echo "  --proxy URL        设置代理"
             echo "  --config FILE      指定配置文件（默认 packaging.yaml）"
             exit 0
             ;;
         *)
             err "未知参数: $1"
-            echo "用法: $0 [--local] [--proxy http://proxy:port] [--config packaging.yaml]"
+            echo "用法: $0 [--local] [--save-env] [--proxy http://proxy:port] [--config packaging.yaml]"
             exit 1
             ;;
     esac
@@ -140,38 +145,65 @@ SQLITE_VERSION="3450000"
 SQLITE_YEAR="2024"
 SRC_DIR="${PACKAGING_DIR}/src"
 
+# 公共源码目录: 优先使用 common_packaging/src/ (Docker 镜像等大文件共享)
+# 如果找不到, 回退到项目本地 SRC_DIR
+COMMON_SRC_DIR="${SRC_DIR}"
+for _candidate in \
+    "${PROJECT_ROOT}/../common_packaging/src" \
+    "${PROJECT_ROOT}/../../common_packaging/src"; do
+    if [[ -d "${_candidate}" ]]; then
+        COMMON_SRC_DIR="$(cd "${_candidate}" && pwd)"
+        break
+    fi
+done
+unset _candidate
+
 # ----------------------------------------------------------------
 # 下载/检查源码包
 # ----------------------------------------------------------------
+_find_or_link() {
+    local filename="$1"
+    local local_path="${SRC_DIR}/${filename}"
+    local common_path="${COMMON_SRC_DIR}/${filename}"
+    if [[ -f "${local_path}" ]]; then
+        return 0
+    fi
+    if [[ "${COMMON_SRC_DIR}" != "${SRC_DIR}" && -f "${common_path}" ]]; then
+        ln -sf "${common_path}" "${local_path}"
+        return 0
+    fi
+    return 1
+}
+
 ensure_sources() {
     mkdir -p "${SRC_DIR}"
 
-    local openssl_tar="${SRC_DIR}/openssl-${OPENSSL_VERSION}.tar.gz"
-    if [[ ! -f "${openssl_tar}" ]]; then
-        info "下载 OpenSSL ${OPENSSL_VERSION}..."
-        curl -sSL -o "${openssl_tar}" \
-            "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
-    else
+    local openssl_tar="openssl-${OPENSSL_VERSION}.tar.gz"
+    if _find_or_link "${openssl_tar}"; then
         info "OpenSSL 源码包已缓存"
+    else
+        info "下载 OpenSSL ${OPENSSL_VERSION}..."
+        curl -sSL -o "${SRC_DIR}/${openssl_tar}" \
+            "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
     fi
 
-    local python_tar="${SRC_DIR}/Python-${PYTHON_VERSION}.tgz"
-    if [[ ! -f "${python_tar}" ]]; then
-        info "下载 Python ${PYTHON_VERSION}..."
-        curl -sSL -o "${python_tar}" \
-            "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz"
-    else
+    local python_tar="Python-${PYTHON_VERSION}.tgz"
+    if _find_or_link "${python_tar}"; then
         info "Python ${PYTHON_VERSION} 源码包已缓存"
+    else
+        info "下载 Python ${PYTHON_VERSION}..."
+        curl -sSL -o "${SRC_DIR}/${python_tar}" \
+            "https://www.python.org/ftp/python/${PYTHON_VERSION}/Python-${PYTHON_VERSION}.tgz"
     fi
 
     if [[ "${NEED_SQLITE}" == "true" ]]; then
-        local sqlite_tar="${SRC_DIR}/sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
-        if [[ ! -f "${sqlite_tar}" ]]; then
-            info "下载 SQLite ${SQLITE_VERSION}..."
-            curl -sSL -o "${sqlite_tar}" \
-                "https://www.sqlite.org/${SQLITE_YEAR}/sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
-        else
+        local sqlite_tar="sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
+        if _find_or_link "${sqlite_tar}"; then
             info "SQLite 源码包已缓存"
+        else
+            info "下载 SQLite ${SQLITE_VERSION}..."
+            curl -sSL -o "${SRC_DIR}/${sqlite_tar}" \
+                "https://www.sqlite.org/${SQLITE_YEAR}/sqlite-autoconf-${SQLITE_VERSION}.tar.gz"
         fi
     fi
 }
@@ -179,6 +211,16 @@ ensure_sources() {
 ensure_rpms() {
     local rpms_dir="${SRC_DIR}/rpms"
     if [[ -d "${rpms_dir}" ]] && ls "${rpms_dir}"/*.rpm &>/dev/null 2>&1; then
+        info "RPM 包已缓存 ($(ls ${rpms_dir}/*.rpm | wc -l) 个)"
+        return 0
+    fi
+
+    # 检查公共目录
+    if [[ "${COMMON_SRC_DIR}" != "${SRC_DIR}" ]] && \
+       [[ -d "${COMMON_SRC_DIR}/rpms" ]] && \
+       ls "${COMMON_SRC_DIR}/rpms"/*.rpm &>/dev/null 2>&1; then
+        info "从公共目录链接 RPM 包..."
+        ln -sfn "${COMMON_SRC_DIR}/rpms" "${rpms_dir}"
         info "RPM 包已缓存 ($(ls ${rpms_dir}/*.rpm | wc -l) 个)"
         return 0
     fi
@@ -200,6 +242,265 @@ ensure_rpms() {
 }
 
 # ----------------------------------------------------------------
+# Docker 基础镜像管理
+# ----------------------------------------------------------------
+BASE_IMAGE="quay.io/pypa/manylinux2014_x86_64"
+IMAGE_TAR="${COMMON_SRC_DIR}/manylinux2014_x86_64.tar"
+
+ensure_docker_image() {
+    if docker image inspect "${BASE_IMAGE}" &>/dev/null 2>&1; then
+        return 0
+    fi
+
+    # 优先检查公共目录，再检查项目目录
+    local tar=""
+    if [[ -f "${COMMON_SRC_DIR}/manylinux2014_x86_64.tar" ]]; then
+        tar="${COMMON_SRC_DIR}/manylinux2014_x86_64.tar"
+    elif [[ -f "${SRC_DIR}/manylinux2014_x86_64.tar" ]]; then
+        tar="${SRC_DIR}/manylinux2014_x86_64.tar"
+    fi
+
+    if [[ -n "${tar}" ]]; then
+        info "从本地加载 Docker 基础镜像: ${tar}"
+        docker load < "${tar}"
+        ok "Docker 基础镜像已加载"
+        return 0
+    fi
+
+    info "Docker 基础镜像将在构建时自动拉取 (需要网络)"
+}
+
+# ----------------------------------------------------------------
+# 保存编译环境 (供内网离线构建)
+# ----------------------------------------------------------------
+save_env() {
+    info "保存编译环境 (用于内网离线构建)"
+    if [[ "${COMMON_SRC_DIR}" != "${SRC_DIR}" ]]; then
+        info "公共目录: ${COMMON_SRC_DIR}"
+        info "项目目录: ${SRC_DIR}"
+    fi
+
+    ensure_sources
+    ensure_rpms
+
+    # 1. 保存 Docker 基础镜像 → 公共目录 (所有项目共享)
+    mkdir -p "${COMMON_SRC_DIR}"
+    if [[ -f "${IMAGE_TAR}" ]]; then
+        info "Docker 基础镜像已缓存: ${IMAGE_TAR} ($(du -h "${IMAGE_TAR}" | cut -f1))"
+    else
+        info "拉取并保存 Docker 基础镜像 → 公共目录..."
+        docker pull "${BASE_IMAGE}"
+        docker save "${BASE_IMAGE}" -o "${IMAGE_TAR}"
+        ok "已保存: ${IMAGE_TAR} ($(du -h "${IMAGE_TAR}" | cut -f1))"
+    fi
+
+    # 2. 保存 Node 镜像 → 公共目录 (如果 Dockerfile 含前端构建)
+    local fe_enabled
+    fe_enabled=$(parse_yaml "frontend.enabled")
+    if [[ "${fe_enabled}" == "true" ]]; then
+        local node_image
+        node_image=$(parse_yaml "frontend.node_image")
+        node_image="${node_image:-node:20-slim}"
+        local node_tar="${COMMON_SRC_DIR}/$(echo "${node_image}" | tr ':/' '__').tar"
+        if [[ -f "${node_tar}" ]]; then
+            info "Node 镜像已缓存: ${node_tar}"
+        else
+            info "拉取并保存 Node 镜像: ${node_image} → 公共目录..."
+            docker pull "${node_image}"
+            docker save "${node_image}" -o "${node_tar}"
+            ok "已保存: ${node_tar} ($(du -h "${node_tar}" | cut -f1))"
+        fi
+    fi
+
+    # 3. 下载 pip 依赖包 → 项目目录
+    local wheels_dir="${SRC_DIR}/wheels"
+    if [[ -d "${wheels_dir}" ]] && ls "${wheels_dir}"/*.whl &>/dev/null 2>&1; then
+        local wheel_count
+        wheel_count=$(ls "${wheels_dir}"/*.whl | wc -l)
+        info "pip 依赖包已缓存 (${wheel_count} 个 .whl), 跳过下载"
+        info "如需更新, 请先删除: rm -rf ${wheels_dir}"
+    else
+    mkdir -p "${wheels_dir}"
+
+    local py_mm
+    py_mm=$(echo "${PYTHON_VERSION}" | grep -oP '^\d+\.\d+')
+    local py_tag="cp${py_mm//./}-cp${py_mm//./}"
+    local py_bin="/opt/python/${py_tag}/bin/python"
+
+    local reqs_file="${SRC_DIR}/_build_requirements.txt"
+
+    # 基础依赖 (始终需要)
+    cat > "${reqs_file}" << 'REQS'
+pip
+setuptools
+wheel
+pyinstaller==6.13.0
+REQS
+
+    # 从 packaging.yaml 提取项目依赖
+    local pre_install
+    pre_install=$(parse_yaml "dependencies.pre_install")
+    if [[ -n "${pre_install}" ]]; then
+        echo "${pre_install}" >> "${reqs_file}"
+    fi
+
+    local pip_install
+    pip_install=$(parse_yaml "dependencies.pip_install")
+    if [[ -n "${pip_install}" ]]; then
+        echo "${pip_install}" >> "${reqs_file}"
+    fi
+
+    local deps_req
+    deps_req=$(parse_yaml "dependencies.requirements_files")
+    if [[ -n "${deps_req}" ]]; then
+        while IFS= read -r rf; do
+            [[ -z "${rf}" ]] && continue
+            local rf_path="${PROJECT_ROOT}/${rf}"
+            if [[ -f "${rf_path}" ]]; then
+                grep -v '^\s*#' "${rf_path}" | grep -v '^\s*$' | grep -v '^\s*-' >> "${reqs_file}"
+            fi
+        done <<< "${deps_req}"
+    fi
+
+    local deps_pyproject
+    deps_pyproject=$(parse_yaml "dependencies.pyproject_toml")
+    if [[ -n "${deps_pyproject}" ]]; then
+        python3 -c "
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib
+import os
+with open(os.path.join('${PROJECT_ROOT}', '${deps_pyproject}'), 'rb') as f:
+    proj = tomllib.load(f)
+for dep in proj.get('project', {}).get('dependencies', []):
+    print(dep)
+" >> "${reqs_file}"
+    fi
+
+    info "下载 pip 依赖包 (Python ${py_mm}, manylinux2014)..."
+    info "依赖列表: $(wc -l < "${reqs_file}") 条"
+
+    local proxy_args=""
+    if [[ -n "${PROXY_ARG}" ]]; then
+        proxy_args="--env HTTP_PROXY=${PROXY_ARG} --env HTTPS_PROXY=${PROXY_ARG}"
+    fi
+
+    docker run --rm --network host \
+        -v "${wheels_dir}:/wheels" \
+        -v "${reqs_file}:/tmp/requirements.txt:ro" \
+        ${proxy_args} \
+        "${BASE_IMAGE}" \
+        bash -c "${py_bin} -m pip download -d /wheels -r /tmp/requirements.txt && chown -R $(id -u):$(id -g) /wheels"
+
+    rm -f "${reqs_file}"
+
+    local wheel_count
+    wheel_count=$(ls "${wheels_dir}" 2>/dev/null | wc -l)
+    ok "pip 依赖包已缓存: ${wheel_count} 个文件"
+    fi  # pip 缓存检查结束
+
+    # 4. 前端包缓存 (自动检测 pnpm/npm)
+    local fe_workdir="" fe_pkg_mgr="" fe_pkg_count=0
+
+    # 从 packaging.yaml 读取配置 (优先)
+    local fe_host_workdir fe_host_mgr
+    fe_host_workdir=$(parse_yaml "frontend_host.workdir")
+    fe_host_mgr=$(parse_yaml "frontend_host.package_manager")
+
+    if [[ -n "${fe_host_workdir}" ]]; then
+        fe_workdir="${PROJECT_ROOT}/${fe_host_workdir}"
+        fe_pkg_mgr="${fe_host_mgr:-pnpm}"
+    else
+        # 自动检测: 扫描项目根目录和常见前端子目录
+        for dir in "" "frontend/" "web-ui/" "web/"; do
+            local check_dir="${PROJECT_ROOT}/${dir}"
+            if [[ -f "${check_dir}pnpm-lock.yaml" ]]; then
+                fe_workdir="${check_dir%/}"
+                fe_pkg_mgr="pnpm"
+                break
+            elif [[ -f "${check_dir}package-lock.json" ]]; then
+                fe_workdir="${check_dir%/}"
+                fe_pkg_mgr="npm"
+                break
+            fi
+        done
+    fi
+
+    if [[ -n "${fe_workdir}" && -n "${fe_pkg_mgr}" ]]; then
+        local fe_store="${SRC_DIR}/${fe_pkg_mgr}-store"
+        local fe_rel_dir="${fe_workdir#${PROJECT_ROOT}/}"
+        [[ "${fe_rel_dir}" == "${PROJECT_ROOT}" ]] && fe_rel_dir="."
+        info "检测到前端项目 (${fe_pkg_mgr}): ${fe_rel_dir}/"
+
+        if [[ -d "${fe_store}" ]] && [[ $(find "${fe_store}" -type f 2>/dev/null | wc -l) -gt 0 ]]; then
+            fe_pkg_count=$(find "${fe_store}" -type f 2>/dev/null | wc -l)
+            info "${fe_pkg_mgr} 依赖已缓存 (${fe_pkg_count} 个文件), 跳过下载"
+            info "如需更新, 请先删除: rm -rf ${fe_store}"
+        elif [[ "${fe_pkg_mgr}" == "pnpm" ]]; then
+            if ! command -v pnpm &>/dev/null; then
+                warn "pnpm 未安装，跳过前端包缓存"
+            else
+                info "下载 pnpm 依赖到离线缓存..."
+                (cd "${fe_workdir}" && CI=true pnpm fetch --store-dir "${fe_store}")
+                fe_pkg_count=$(find "${fe_store}" -type f 2>/dev/null | wc -l)
+                ok "pnpm 依赖已缓存: ${fe_store} ($(du -sh "${fe_store}" | cut -f1))"
+            fi
+        elif [[ "${fe_pkg_mgr}" == "npm" ]]; then
+            if ! command -v npm &>/dev/null; then
+                warn "npm 未安装，跳过前端包缓存"
+            else
+                info "下载 npm 依赖到离线缓存..."
+                (cd "${fe_workdir}" && npm ci --cache "${fe_store}")
+                fe_pkg_count=$(find "${fe_store}" -type f 2>/dev/null | wc -l)
+                ok "npm 依赖已缓存: ${fe_store} ($(du -sh "${fe_store}" | cut -f1))"
+            fi
+        fi
+    fi
+
+    # 汇总
+    echo ""
+    echo "========================================="
+    ok "编译环境保存完成"
+    echo "========================================="
+    if [[ "${COMMON_SRC_DIR}" != "${SRC_DIR}" ]]; then
+        echo ""
+        echo "  [公共] ${COMMON_SRC_DIR}/"
+        echo "    Docker 镜像  : $(du -h "${IMAGE_TAR}" | cut -f1)"
+        echo "    源码包       : $(ls "${COMMON_SRC_DIR}"/*.tar.gz "${COMMON_SRC_DIR}"/*.tgz 2>/dev/null | wc -l) 个"
+        echo "    RPM 包       : $(ls "${COMMON_SRC_DIR}"/rpms/*.rpm 2>/dev/null | wc -l) 个"
+        echo ""
+        echo "  [项目] ${SRC_DIR}/"
+        echo "    pip 包       : ${wheel_count} 个"
+        if [[ ${fe_pkg_count} -gt 0 ]]; then
+            echo "    前端包       : ${fe_pkg_mgr} ($(du -sh "${SRC_DIR}/${fe_pkg_mgr}-store" | cut -f1))"
+        fi
+    else
+        local total_size
+        total_size=$(du -sh "${SRC_DIR}" | cut -f1)
+        echo "  总大小       : ${total_size}"
+        echo "  Docker 镜像  : $(du -h "${IMAGE_TAR}" | cut -f1)"
+        echo "  源码包       : $(ls "${SRC_DIR}"/*.tar.gz "${SRC_DIR}"/*.tgz 2>/dev/null | wc -l) 个"
+        echo "  RPM 包       : $(ls "${SRC_DIR}"/rpms/*.rpm 2>/dev/null | wc -l) 个"
+        echo "  pip 包       : ${wheel_count} 个"
+        if [[ ${fe_pkg_count} -gt 0 ]]; then
+            echo "  前端包       : ${fe_pkg_mgr} ($(du -sh "${SRC_DIR}/${fe_pkg_mgr}-store" | cut -f1))"
+        fi
+    fi
+    echo ""
+    echo "  内网使用方法:"
+    if [[ "${COMMON_SRC_DIR}" != "${SRC_DIR}" ]]; then
+        echo "    1. 复制公共目录: common_packaging/src/ (所有项目共享，仅需一份)"
+        echo "    2. 复制项目目录: packaging/src/ (各项目独有)"
+        echo "    3. 执行 make build 即可离线编译"
+    else
+        echo "    1. 将 packaging/src/ 整个目录复制到内网服务器的项目中"
+        echo "    2. 执行 make build 即可离线编译"
+    fi
+    echo "========================================="
+}
+
+# ----------------------------------------------------------------
 # Docker 构建
 # ----------------------------------------------------------------
 build_docker() {
@@ -212,11 +513,20 @@ build_docker() {
 
     ensure_sources
     ensure_rpms
+    ensure_docker_image
+
+    # 检测离线模式: wheels 目录存在且非空
+    local offline_flag=""
+    local wheels_dir="${SRC_DIR}/wheels"
+    if [[ -d "${wheels_dir}" ]] && ls "${wheels_dir}"/*.whl &>/dev/null 2>&1; then
+        info "检测到离线 pip 缓存 (${wheels_dir})，启用离线模式"
+        offline_flag="--offline"
+    fi
 
     # 生成 Dockerfile
     local dockerfile="${PROJECT_ROOT}/.packaging.Dockerfile"
     info "生成 Dockerfile..."
-    python3 "${COMMON_DIR}/generate_dockerfile.py" "${CONFIG_FILE}" -o "${dockerfile}"
+    python3 "${COMMON_DIR}/generate_dockerfile.py" "${CONFIG_FILE}" -o "${dockerfile}" ${offline_flag}
 
     local build_args=(
         --build-arg "HTTP_PROXY=${HTTP_PROXY:-}"
@@ -514,6 +824,7 @@ _verify_binaries() {
 # 入口
 # ----------------------------------------------------------------
 case "${MODE}" in
-    docker) build_docker ;;
-    local)  build_local ;;
+    docker)   build_docker ;;
+    local)    build_local ;;
+    save-env) save_env ;;
 esac

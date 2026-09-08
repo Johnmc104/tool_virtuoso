@@ -68,6 +68,7 @@ _C_RESET  := \033[0m
         deploy-bin \
         package tar \
         release tag version \
+        save-build-env \
         pkg-clean pkg-info \
         pre-build post-build pre-package post-package pre-release
 
@@ -92,6 +93,13 @@ _do-build-local:
 	$(BUILD_SCRIPT) --local
 
 build-centos7: build ## 别名: build-centos7 → build
+
+# ============================================================
+# 1b. save-build-env — 导出编译环境供内网离线构建
+# ============================================================
+save-build-env: ## 导出编译环境 (Docker 镜像 + pip 依赖 + 源码包)
+	@printf '%b\n' "$(_C_BLUE)[ENV]$(_C_RESET)  导出 $(PROJECT_NAME) 编译环境..."
+	$(BUILD_SCRIPT) --save-env
 
 # ============================================================
 # 2. deploy-bin — 部署二进制到目标目录

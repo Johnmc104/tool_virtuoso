@@ -199,3 +199,23 @@ def run_param(lib: str, cell: str, inst: str, param: str, value: str, *,
     except Exception as e:
         print(f"[sch] error: {e}", file=sys.stderr)
         return 1
+
+
+def run_netlist(lib: str, cell: str, output_dir: str, *,
+                view: str = "schematic", simulator: str = "spectre",
+                timeout: int = 120, profile: str | None = None) -> int:
+    from pathlib import Path
+    from vbridge.env_helpers import get_client
+
+    client = get_client(profile=profile, timeout=timeout)
+    out = Path(output_dir)
+    try:
+        result = client.schematic.export_netlist(
+            lib, cell, out, view=view, simulator=simulator, timeout=timeout,
+        )
+        input_file = getattr(result, "input_file", None) or (out / "input.scs")
+        print(f"[sch] Netlist exported: {input_file}")
+        return 0
+    except Exception as e:
+        print(f"[sch] error: {e}", file=sys.stderr)
+        return 1

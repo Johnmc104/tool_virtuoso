@@ -181,6 +181,75 @@ def _export_csv(all_data: dict[str, dict], signal_filter: str | None) -> int:
     return 0
 
 
+def run_measure(raw_dir: str, measure: str, signal: str, *,
+                from_time: float | None = None,
+                to_time: float | None = None) -> int:
+    from virtuoso_bridge.spectre.psf import read_psf_ascii
+
+    d = Path(raw_dir)
+    if not d.is_dir():
+        print(f"[sim] error: directory not found: {raw_dir}", file=sys.stderr)
+        return 1
+
+    analysis_files = _find_analysis_files(d)
+    vals = None
+    time_vals = None
+    for af in analysis_files:
+        try:
+            data = read_psf_ascii(af)
+        except Exception:
+            continue
+        if signal in data and isinstance(data[signal], list):
+            vals = [x.real if isinstance(x, complex) else x for x in data[signal]]
+            time_vals = data.get("time") or data.get("freq")
+            if time_vals and isinstance(time_vals, list):
+                time_vals = [x.real if isinstance(x, complex) else x for x in time_vals]
+            break
+
+    if vals is None:
+        print(f"[sim] error: signal '{signal}' not found as sweep data", file=sys.stderr)
+        return 1
+
+    if time_vals and (from_time is not None or to_time is not None):
+        t0 = from_time if from_time is not None else time_vals[0]
+        t1 = to_time if to_time is not None else time_vals[-1]
+        filtered = [(t, v) for t, v in zip(time_vals, vals) if t0 <= t <= t1]
+        if not filtered:
+            print(f"[sim] error: no data in range [{t0}, {t1}]", file=sys.stderr)
+            return 1
+        time_vals, vals = zip(*filtered)
+        time_vals, vals = list(time_vals), list(vals)
+
+    if measure == "avg":
+        print(f"{sum(vals) / len(vals):.6g}")
+    elif measure == "rms":
+        rms = (sum(v * v for v in vals) / len(vals)) ** 0.5
+        print(f"{rms:.6g}")
+    elif measure == "minmax":
+        print(f"min={min(vals):.6g}  max={max(vals):.6g}")
+    elif measure == "freq":
+        if not time_vals:
+            print("[sim] error: no time axis for frequency measurement", file=sys.stderr)
+            return 1
+        mid = (max(vals) + min(vals)) / 2
+        crossings = []
+        for i in range(1, len(vals)):
+            if vals[i - 1] < mid <= vals[i]:
+                frac = (mid - vals[i - 1]) / (vals[i] - vals[i - 1])
+                crossings.append(time_vals[i - 1] + frac * (time_vals[i] - time_vals[i - 1]))
+        if len(crossings) < 2:
+            print("[sim] error: not enough zero crossings for frequency", file=sys.stderr)
+            return 1
+        periods = [crossings[j + 1] - crossings[j] for j in range(len(crossings) - 1)]
+        freq = 1 / (sum(periods) / len(periods))
+        print(f"{freq:.6g}")
+    else:
+        print(f"[sim] error: unknown measure '{measure}'. Use: avg, rms, minmax, freq",
+              file=sys.stderr)
+        return 1
+    return 0
+
+
 def run_license(*, profile: str | None = None) -> int:
     from virtuoso_bridge.env import load_vb_env
     from virtuoso_bridge.spectre.runner import SpectreSimulator

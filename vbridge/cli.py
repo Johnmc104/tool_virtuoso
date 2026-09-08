@@ -136,6 +136,14 @@ def build_parser():
     sp_param.add_argument("-p", "--profile", default=None)
     sp_param.add_argument("--env", default=None)
 
+    sp_netlist = sch_sub.add_parser("netlist", help="Export netlist from schematic")
+    sp_netlist.add_argument("lib"); sp_netlist.add_argument("cell")
+    sp_netlist.add_argument("-o", "--output", required=True, help="Output directory")
+    sp_netlist.add_argument("--simulator", default="spectre", help="Simulator type")
+    sp_netlist.add_argument("--timeout", type=int, default=120)
+    sp_netlist.add_argument("-p", "--profile", default=None)
+    sp_netlist.add_argument("--env", default=None)
+
     # -- sim ---
     sp_sim = subparsers.add_parser("sim", help="Spectre simulation")
     sim_sub = sp_sim.add_subparsers(dest="sim_command")
@@ -157,9 +165,24 @@ def build_parser():
     sp_sim_result.add_argument("--csv", action="store_true", dest="export_csv",
                                help="Export data as CSV")
 
+    sp_sim_meas = sim_sub.add_parser("measure", help="Measure signal (freq/avg/rms/minmax)")
+    sp_sim_meas.add_argument("dir", help="Raw PSF output directory")
+    sp_sim_meas.add_argument("measure", choices=["freq", "avg", "rms", "minmax"],
+                             help="Measurement type")
+    sp_sim_meas.add_argument("signal", help="Signal name")
+    sp_sim_meas.add_argument("--from", type=float, default=None, dest="from_time",
+                             help="Start time (e.g. 1e-6)")
+    sp_sim_meas.add_argument("--to", type=float, default=None, dest="to_time",
+                             help="End time")
+
     sp_sim_lic = sim_sub.add_parser("license", help="Check Spectre license")
     sp_sim_lic.add_argument("-p", "--profile", default=None)
     sp_sim_lic.add_argument("--env", default=None)
+
+    # -- cleanup ---
+    sp_cleanup = subparsers.add_parser("cleanup", help="Kill stale Cadence processes + remove OA locks")
+    sp_cleanup.add_argument("--dir", default=None, help="Directory to search for lock files")
+    sp_cleanup.add_argument("--dry-run", action="store_true", help="Show what would be done")
 
     # -- lib ---
     sp_lib = subparsers.add_parser("lib", help="Library management")
@@ -255,6 +278,11 @@ def _handle_sch(args, profile: str | None) -> int:
         from vbridge.sch_cmd import run_param
         return run_param(args.lib, args.cell, args.inst, args.param, args.value,
                          view=args.view, timeout=args.timeout, profile=profile)
+    if sub == "netlist":
+        from vbridge.sch_cmd import run_netlist
+        return run_netlist(args.lib, args.cell, args.output,
+                           simulator=args.simulator, timeout=args.timeout,
+                           profile=profile)
     print(f"unknown sch subcommand: {sub}")
     return 1
 
@@ -275,6 +303,10 @@ def _handle_sim(args, profile: str | None) -> int:
         return run_result(args.dir, signal=args.signal,
                           json_output=args.json_output,
                           export_csv=getattr(args, "export_csv", False))
+    if sub == "measure":
+        from vbridge.sim_cmd import run_measure
+        return run_measure(args.dir, args.measure, args.signal,
+                           from_time=args.from_time, to_time=args.to_time)
     if sub == "license":
         from vbridge.sim_cmd import run_license
         return run_license(profile=profile)
@@ -494,6 +526,11 @@ def main(argv: list[str] | None = None) -> int:
 
     if command == "symbol":
         return _handle_symbol(args, profile)
+
+    if command == "cleanup":
+        from vbridge.cleanup_cmd import run_cleanup
+        return run_cleanup(search_dir=getattr(args, "dir", None),
+                           dry_run=getattr(args, "dry_run", False))
 
     if command == "daemon":
         return _run_daemon(args.host, args.port)

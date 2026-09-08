@@ -14,8 +14,6 @@ from virtuoso_bridge.virtuoso.schematic.ops import (
     schematic_create_wire,
     schematic_create_wire_label,
 )
-from virtuoso_bridge.virtuoso.ops import escape_skill_string
-
 _REQUIRED = {
     "add-inst": ["lib", "cell"],
     "wire": ["from_inst", "from_term", "to_inst", "to_term"],
@@ -77,24 +75,7 @@ def _dispatch_op(sch: Any, op: dict) -> None:
             rotation="R0",
         ))
     elif kind == "set-param":
-        e_inst = escape_skill_string(op["inst"])
-        params = op["params"]
-        if not isinstance(params, dict) or not params:
-            raise ValueError("set-param 'params' must be a non-empty dict")
-        lines = [
-            f'let((inst cdf)',
-            f'inst = car(setof(i cv~>instances i~>name == "{e_inst}"))',
-            f'unless(inst error("Instance %s not found" "{e_inst}"))',
-            f'cdf = cdfGetInstCDF(inst)',
-        ]
-        for p_name, p_val in params.items():
-            e_p = escape_skill_string(p_name)
-            e_v = escape_skill_string(str(p_val))
-            lines.append(f'cdfFindParamByName(cdf "{e_p}")~>value = "{e_v}"')
-            if p_name == "w":
-                lines.append(f'when(cdfFindParamByName(cdf "wf") cdfFindParamByName(cdf "wf")~>value = "{e_v}")')
-        lines.append(")")
-        sch.add("\n".join(lines))
+        pass
 
 
 def run_batch(lib: str, cell: str, ops_json: str, *,
@@ -112,15 +93,30 @@ def run_batch(lib: str, cell: str, ops_json: str, *,
         print("[sch] error: JSON must be an array of operations", file=sys.stderr)
         return 1
 
+    edit_ops = [op for op in ops if op.get("op") != "set-param"]
+    param_ops = [op for op in ops if op.get("op") == "set-param"]
+
     client = get_client(profile=profile, timeout=timeout)
     try:
-        with client.schematic.edit(lib, cell, view=view, timeout=timeout) as sch:
-            for i, op in enumerate(ops):
-                try:
-                    _dispatch_op(sch, op)
-                except (KeyError, TypeError, ValueError) as e:
-                    print(f"[sch] error in op #{i}: {e}", file=sys.stderr)
+        if edit_ops:
+            with client.schematic.edit(lib, cell, view=view, timeout=timeout) as sch:
+                for i, op in enumerate(edit_ops):
+                    try:
+                        _dispatch_op(sch, op)
+                    except (KeyError, TypeError, ValueError) as e:
+                        print(f"[sch] error in op #{i}: {e}", file=sys.stderr)
+                        return 1
+
+        if param_ops:
+            from virtuoso_bridge.virtuoso.schematic.params import _run_batched_param_update
+            for op in param_ops:
+                params = op.get("params", {})
+                if not isinstance(params, dict) or not params:
+                    print(f"[sch] error: set-param 'params' must be a non-empty dict",
+                          file=sys.stderr)
                     return 1
+                _run_batched_param_update(client, lib, cell, op["inst"], params)
+
         print(f"[sch] OK: {len(ops)} ops applied to {lib}/{cell}/{view}")
         return 0
     except Exception as e:
@@ -193,51 +189,13 @@ def run_param(lib: str, cell: str, inst: str, param: str, value: str, *,
               view: str = "schematic", timeout: int = 30,
               profile: str | None = None) -> int:
     from vbridge.env_helpers import get_client
-
-    e_lib = escape_skill_string(lib)
-    e_cell = escape_skill_string(cell)
-    e_view = escape_skill_string(view)
-    e_inst = escape_skill_string(inst)
-    e_param = escape_skill_string(param)
-    e_value = escape_skill_string(value)
-
-    wf_sync = ""
-    if param == "w":
-        wf_sync = (
-            f'when(cdfFindParamByName(cdf "wf")\n'
-            f'  let((nf_p nf_val)\n'
-            f'    nf_p = cdfFindParamByName(cdf "nf")\n'
-            f'    nf_val = if(nf_p atoi(nf_p~>value || "1") 1)\n'
-            f'    cdfFindParamByName(cdf "wf")~>value = "{e_value}"\n'
-            f'  )\n'
-            f')\n'
-        )
-
-    skill = (
-        f'let((cv inst cdf)\n'
-        f'cv = dbOpenCellViewByType("{e_lib}" "{e_cell}" "{e_view}" "" "a")\n'
-        f'inst = car(setof(i cv~>instances i~>name == "{e_inst}"))\n'
-        f'unless(inst dbClose(cv) error("Instance %s not found" "{e_inst}"))\n'
-        f'cdf = cdfGetInstCDF(inst)\n'
-        f'unless(cdfFindParamByName(cdf "{e_param}")\n'
-        f'  dbClose(cv) error("Parameter %s not found on %s" "{e_param}" "{e_inst}"))\n'
-        f'cdfFindParamByName(cdf "{e_param}")~>value = "{e_value}"\n'
-        f'{wf_sync}'
-        f'dbSave(cv)\n'
-        f'dbClose(cv)\n'
-        f't)'
-    )
+    from virtuoso_bridge.virtuoso.schematic.params import _run_batched_param_update
 
     client = get_client(profile=profile, timeout=timeout)
-    result = client.execute_skill(skill, timeout=timeout)
-    if result.ok:
-        msg = f"[sch] Set {inst}.{param} = {value}"
-        if wf_sync:
-            msg += f" (wf synced)"
-        print(msg)
-    else:
-        print(f"[sch] error: {result.output}", file=sys.stderr)
-        if result.errors:
-            for e in result.errors:
-                print(f"  {e}", file=sys.stderr)
-    return 0 if result.ok else 1
+    try:
+        applied = _run_batched_param_update(client, lib, cell, inst, {param: value})
+        print(f"[sch] Set {inst}.{param} = {value} (with CDF callbacks)")
+        return 0
+    except Exception as e:
+        print(f"[sch] error: {e}", file=sys.stderr)
+        return 1

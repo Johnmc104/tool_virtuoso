@@ -48,8 +48,41 @@ def run_sim(netlist: str, *, output_dir: str | None = None,
     return 0 if result.ok else 1
 
 
+def _to_real(v):
+    """Convert complex to float if imaginary part is zero."""
+    if isinstance(v, complex):
+        return v.real if v.imag == 0 else [v.real, v.imag]
+    return v
+
+
+def _find_analysis_files(d: Path) -> list[Path]:
+    """Find PSF ASCII analysis result files in a directory."""
+    analysis_exts = {".ac", ".tran", ".dc", ".noise", ".stb", ".pss"}
+    results = []
+    for f in sorted(d.iterdir()):
+        if not f.is_file() or f.name.startswith("."):
+            continue
+        if f.suffix in analysis_exts:
+            results.append(f)
+        elif any(ext in f.name for ext in analysis_exts):
+            results.append(f)
+    return results
+
+
+def _summarize_signal(vals):
+    """One-line summary for a signal value."""
+    if not isinstance(vals, list):
+        return str(vals)
+    reals = [v.real if isinstance(v, complex) else v for v in vals
+             if isinstance(v, (int, float, complex))]
+    if not reals:
+        return f"[{len(vals)} points]"
+    return f"[{len(reals)} pts] min={min(reals):.4g}  max={max(reals):.4g}"
+
+
 def run_result(raw_dir: str, *, signal: str | None = None,
-               json_output: bool = False) -> int:
+               json_output: bool = False,
+               export_csv: bool = False) -> int:
     from virtuoso_bridge.spectre.psf import read_psf_ascii
 
     d = Path(raw_dir)
@@ -57,21 +90,12 @@ def run_result(raw_dir: str, *, signal: str | None = None,
         print(f"[sim] error: directory not found: {raw_dir}", file=sys.stderr)
         return 1
 
-    analysis_exts = (".ac", ".tran", ".dc", ".noise", ".stb", ".pss")
-    analysis_files = [f for f in sorted(d.iterdir())
-                      if f.suffix in analysis_exts and f.is_file()]
-
-    if not analysis_files:
-        psf_candidates = [f for f in sorted(d.iterdir())
-                          if f.is_file() and not f.name.startswith(".")]
-        if psf_candidates:
-            analysis_files = psf_candidates[:5]
-
+    analysis_files = _find_analysis_files(d)
     if not analysis_files:
         print(f"[sim] error: no analysis files found in {raw_dir}", file=sys.stderr)
         return 1
 
-    all_data = {}
+    all_data: dict[str, dict] = {}
     for af in analysis_files:
         try:
             data = read_psf_ascii(af)
@@ -83,17 +107,22 @@ def run_result(raw_dir: str, *, signal: str | None = None,
         print("[sim] error: no parseable results found", file=sys.stderr)
         return 1
 
+    if export_csv:
+        return _export_csv(all_data, signal)
+
     if signal:
         for fname, data in all_data.items():
             if signal in data:
                 vals = data[signal]
                 if json_output:
                     if isinstance(vals, list):
-                        print(json.dumps({signal: [v.real if isinstance(v, complex) and v.imag == 0 else str(v) for v in vals]}, ensure_ascii=False))
+                        print(json.dumps({signal: [_to_real(v) for v in vals]},
+                                         ensure_ascii=False))
                     else:
-                        print(json.dumps({signal: vals}, ensure_ascii=False))
+                        print(json.dumps({signal: _to_real(vals)},
+                                         ensure_ascii=False))
                 else:
-                    print(f"{fname}: {signal} = {vals if not isinstance(vals, list) else f'[{len(vals)} points]'}")
+                    print(f"{fname}: {signal} = {_summarize_signal(vals)}")
                 return 0
         print(f"[sim] error: signal '{signal}' not found", file=sys.stderr)
         available = set()
@@ -105,17 +134,50 @@ def run_result(raw_dir: str, *, signal: str | None = None,
     if json_output:
         summary = {}
         for fname, data in all_data.items():
-            summary[fname] = {k: f"[{len(v)} points]" if isinstance(v, list) else v
-                              for k, v in data.items()}
+            summary[fname] = {}
+            for k, v in data.items():
+                if isinstance(v, list):
+                    reals = [x.real if isinstance(x, complex) else x for x in v
+                             if isinstance(x, (int, float, complex))]
+                    summary[fname][k] = {
+                        "points": len(v),
+                        "min": min(reals) if reals else None,
+                        "max": max(reals) if reals else None,
+                    }
+                else:
+                    summary[fname][k] = _to_real(v)
         print(json.dumps(summary, indent=2, ensure_ascii=False, default=str))
     else:
         for fname, data in all_data.items():
             print(f"\n{fname}:")
             for k, v in data.items():
-                if isinstance(v, list):
-                    print(f"  {k}: [{len(v)} points]")
-                else:
-                    print(f"  {k}: {v}")
+                print(f"  {k}: {_summarize_signal(v)}")
+    return 0
+
+
+def _export_csv(all_data: dict[str, dict], signal_filter: str | None) -> int:
+    """Export parsed data as CSV to stdout."""
+    for fname, data in all_data.items():
+        sweep_keys = [k for k, v in data.items() if isinstance(v, list)]
+        scalar_keys = [k for k, v in data.items() if not isinstance(v, list)]
+        if scalar_keys and not sweep_keys:
+            print(f"# {fname} (scalar)")
+            print("signal,value")
+            for k in sorted(scalar_keys):
+                if signal_filter and k != signal_filter:
+                    continue
+                print(f"{k},{_to_real(data[k])}")
+        elif sweep_keys:
+            cols = [k for k in sweep_keys
+                    if not signal_filter or k == signal_filter or k == "time" or k == "freq"]
+            if not cols:
+                continue
+            print(f"# {fname} (sweep, {len(data[cols[0]])} points)")
+            print(",".join(cols))
+            n = len(data[cols[0]])
+            for i in range(n):
+                row = [str(_to_real(data[c][i])) for c in cols]
+                print(",".join(row))
     return 0
 
 

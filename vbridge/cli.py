@@ -154,6 +154,8 @@ def build_parser():
     sp_sim_result.add_argument("dir", help="Raw PSF output directory")
     sp_sim_result.add_argument("--signal", default=None, help="Query specific signal")
     sp_sim_result.add_argument("--json", action="store_true", dest="json_output")
+    sp_sim_result.add_argument("--csv", action="store_true", dest="export_csv",
+                               help="Export data as CSV")
 
     sp_sim_lic = sim_sub.add_parser("license", help="Check Spectre license")
     sp_sim_lic.add_argument("-p", "--profile", default=None)
@@ -271,7 +273,8 @@ def _handle_sim(args, profile: str | None) -> int:
     if sub == "result":
         from vbridge.sim_cmd import run_result
         return run_result(args.dir, signal=args.signal,
-                          json_output=args.json_output)
+                          json_output=args.json_output,
+                          export_csv=getattr(args, "export_csv", False))
     if sub == "license":
         from vbridge.sim_cmd import run_license
         return run_license(profile=profile)

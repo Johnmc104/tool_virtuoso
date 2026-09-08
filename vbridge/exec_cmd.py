@@ -20,10 +20,8 @@ def run(expression: str, *, timeout: int = 30, json_output: bool = False,
         print("[exec] error: empty expression", file=sys.stderr)
         return 1
 
-    if "\n" not in expression:
-        expression = "\n" + expression
-
-    result = client.execute_skill(expression, timeout=timeout)
+    wrapped = f"progn(\n{expression}\n)"
+    result = client.execute_skill(wrapped, timeout=timeout)
 
     if json_output:
         print(json.dumps({

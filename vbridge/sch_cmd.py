@@ -6,25 +6,51 @@ import json
 import sys
 from typing import Any
 
+from virtuoso_bridge.virtuoso.schematic.ops import (
+    schematic_create_inst_by_master_name,
+    schematic_create_wire_between_instance_terms,
+    schematic_label_instance_term,
+    schematic_create_pin,
+    schematic_create_wire,
+    schematic_create_wire_label,
+)
+
+_REQUIRED = {
+    "add-inst": ["lib", "cell"],
+    "wire": ["from_inst", "from_term", "to_inst", "to_term"],
+    "label-term": ["inst", "term", "net"],
+    "label-mos": ["inst"],
+    "add-pin": ["name"],
+    "add-wire": ["points"],
+    "add-label": ["text"],
+}
+
 
 def _dispatch_op(sch: Any, op: dict) -> None:
     kind = op.get("op", "")
+    required = _REQUIRED.get(kind)
+    if required is None:
+        raise ValueError(f"unknown op: {kind!r}")
+    missing = [k for k in required if k not in op]
+    if missing:
+        raise ValueError(f"op {kind!r} missing required fields: {missing}")
+
     if kind == "add-inst":
-        sch.add_instance(
-            op["lib"], op["cell"],
-            (op.get("x", 0), op.get("y", 0)),
-            orientation=op.get("orientation", "R0"),
-            name=op.get("name", ""),
-        )
+        sch.add(schematic_create_inst_by_master_name(
+            op["lib"], op["cell"], "schematic",
+            op.get("name", ""),
+            op.get("x", 0), op.get("y", 0),
+            op.get("orientation", "R0"),
+        ))
     elif kind == "wire":
-        sch.add_wire_between_instance_terms(
+        sch.add(schematic_create_wire_between_instance_terms(
             op["from_inst"], op["from_term"],
             op["to_inst"], op["to_term"],
-        )
+        ))
     elif kind == "label-term":
-        sch.add_net_label_to_instance_term(
+        sch.add(schematic_label_instance_term(
             op["inst"], op["term"], op["net"],
-        )
+        ))
     elif kind == "label-mos":
         sch.add_net_label_to_transistor(
             op["inst"],
@@ -32,22 +58,22 @@ def _dispatch_op(sch: Any, op: dict) -> None:
             op.get("source"), op.get("body"),
         )
     elif kind == "add-pin":
-        sch.add_pin(
+        sch.add(schematic_create_pin(
             op["name"],
-            (op.get("x", 0), op.get("y", 0)),
-            orientation=op.get("orientation", "R0"),
+            op.get("x", 0), op.get("y", 0),
+            op.get("orientation", "R0"),
             direction=op.get("dir", "inputOutput"),
-        )
+        ))
     elif kind == "add-wire":
         points = [(p[0], p[1]) for p in op["points"]]
-        sch.add_wire(points)
+        sch.add(schematic_create_wire(points))
     elif kind == "add-label":
-        sch.add_label(
-            (op.get("x", 0), op.get("y", 0)),
+        sch.add(schematic_create_wire_label(
+            op.get("x", 0), op.get("y", 0),
             op["text"],
-        )
-    else:
-        raise ValueError(f"unknown op: {kind!r}")
+            justification="lowerLeft",
+            rotation="R0",
+        ))
 
 
 def run_batch(lib: str, cell: str, ops_json: str, *,
@@ -102,24 +128,15 @@ def run_save(*, timeout: int = 30, profile: str | None = None) -> int:
 def run_list_instances(lib: str, cell: str, *, view: str = "schematic",
                        timeout: int = 30, profile: str | None = None) -> int:
     from vbridge.env_helpers import get_client
+    from virtuoso_bridge.virtuoso.schematic.reader import read_schematic
+
     client = get_client(profile=profile, timeout=timeout)
-    skill = (
-        'let((cv insts buf)\n'
-        f'cv = dbOpenCellViewByType("{lib}" "{cell}" "{view}")\n'
-        'insts = cv~>instances\n'
-        'buf = ""\n'
-        'foreach(inst insts\n'
-        '  buf = strcat(buf sprintf(nil "  %-8s  %-15s  (%.2f, %.2f)\\n"\n'
-        '    inst~>name inst~>cellName xCoord(inst~>xy) yCoord(inst~>xy))))\n'
-        'buf = strcat(buf sprintf(nil "Total: %d instances\\n" length(insts)))\n'
-        'dbClose(cv)\n'
-        'buf)'
-    )
-    result = client.execute_skill(skill, timeout=timeout)
-    if result.output:
-        out = result.output
-        if out.startswith('"') and out.endswith('"'):
-            out = out[1:-1]
-        out = out.replace("\\n", "\n")
-        print(out, end="")
-    return 0 if result.ok else 1
+    data = read_schematic(client, lib, cell, include_positions=True, timeout=timeout)
+    instances = data.get("instances", [])
+    for inst in instances:
+        name = inst.get("name", "?")
+        cell_name = inst.get("cellName", "?")
+        xy = inst.get("xy", [0, 0])
+        print(f"  {name:<8s}  {cell_name:<15s}  ({xy[0]:.2f}, {xy[1]:.2f})")
+    print(f"Total: {len(instances)} instances")
+    return 0

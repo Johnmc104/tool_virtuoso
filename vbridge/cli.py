@@ -98,9 +98,69 @@ def _add_lib_cell_args(sp):
     sp.add_argument("cell", help="Cell name (e.g. osc, nch_33)")
 
 
+def _get_version() -> str:
+    from pathlib import Path
+    for p in [Path(__file__).parent.parent / "VERSION",
+              Path(__file__).parent / "VERSION"]:
+        if p.is_file():
+            return p.read_text().strip()
+    return "dev"
+
+
+class _VbridgeHelpAction(argparse._HelpAction):
+    """Custom help that shows grouped command summary."""
+
+    def __call__(self, parser, namespace, values, option_string=None):
+        version = _get_version()
+        print(f"vbridge v{version} — Virtuoso Bridge CLI")
+        print()
+        print("usage: vbridge [-h] [-V] <command> [options]")
+        print()
+        print("connection:")
+        print("  init          Create .env config           auto-start    One-click start")
+        print("  start/stop    Manage SSH tunnel             status        Check connection")
+        print()
+        print("schematic:")
+        print("  sch read      Read topology (--json)        sch list      List instances")
+        print("  sch param     Set parameter (auto w/wf)     sch batch     Batch JSON ops (--dry-run)")
+        print("  sch netlist   Export netlist (--standalone)  sch create    Create cellview (--force)")
+        print()
+        print("simulation:")
+        print("  sim run       Run Spectre simulation        sim result    View results (--csv)")
+        print("  sim measure   Measure: freq/avg/gain/bw/thd sim plot     Waveform plot (HTML/PNG)")
+        print()
+        print("maestro:")
+        print("  maestro run   Run Maestro simulation        maestro var   Design variables")
+        print("  maestro signals  List signals               maestro export  Export waveform")
+        print()
+        print("library:")
+        print("  lib list      List libraries (--detail)     lib cells     PDK devices (--filter)")
+        print("  lib cell-info Device attributes             lib views     Cell views")
+        print()
+        print("other:")
+        print("  exec          Execute SKILL expression      load          Load .il script")
+        print("  cleanup       Kill stale processes           symbol generate  Create symbol")
+        print("  skill-find    Search SKILL API docs          screenshot   Capture window")
+        print()
+        print("options:")
+        print("  -h, --help    Show this help                -V, --version  Show version")
+        print("  -p PROFILE    Connection profile             --env FILE    Explicit .env path")
+        print()
+        print("Use 'vbridge <command> --help' for detailed usage of each command.")
+        parser.exit()
+
+
 def build_parser():
     """Build upstream parser then add extension subcommands."""
     parser = upstream_build_parser()
+    parser.add_argument("-V", "--version", action="version",
+                        version=f"vbridge {_get_version()}")
+
+    # Replace default help with grouped version
+    for action in parser._actions:
+        if isinstance(action, argparse._HelpAction):
+            action.__class__ = _VbridgeHelpAction
+            break
 
     # Accept -u (Python unbuffered flag) silently — ramic_bridge.il hardcodes it
     parser.add_argument("-u", action="store_true", default=False,
@@ -312,8 +372,8 @@ def build_parser():
     sp_mae_export.add_argument("--analysis", default="tran", help="Analysis type (default: tran)")
     _add_common_opts(sp_mae_export, timeout=120)
 
-    # -- daemon (internal, called by Virtuoso IPC) ---
-    sp_daemon = subparsers.add_parser("daemon", help="Run RAMIC bridge daemon")
+    # -- daemon (internal, hidden from help) ---
+    sp_daemon = subparsers.add_parser("daemon", help=argparse.SUPPRESS)
     sp_daemon.add_argument("host"); sp_daemon.add_argument("port", type=int)
 
     _set_prog_recursive(parser, "vbridge")

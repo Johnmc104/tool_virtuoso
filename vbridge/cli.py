@@ -137,6 +137,10 @@ class _VbridgeHelpAction(argparse._HelpAction):
         print("  lib list      List libraries (--detail)     lib cells     PDK devices (--filter)")
         print("  lib cell-info Device attributes             lib views     Cell views")
         print()
+        print("layout:")
+        print("  layout read   Layout summary                 layout layers  List used layers")
+        print("  layout export-gds  Export GDS-II              layout batch   Batch layout ops")
+        print()
         print("other:")
         print("  exec          Execute SKILL expression      load          Load .il script")
         print("  cleanup       Kill stale processes           symbol generate  Create symbol")
@@ -372,6 +376,31 @@ def build_parser():
     sp_mae_export.add_argument("--analysis", default="tran", help="Analysis type (default: tran)")
     _add_common_opts(sp_mae_export, timeout=120)
 
+    # -- layout ---
+    sp_lay = subparsers.add_parser("layout", help="Layout operations")
+    lay_sub = sp_lay.add_subparsers(dest="layout_command")
+
+    sp_lay_read = lay_sub.add_parser("read", help="Read layout summary (instances, shapes, bbox)")
+    _add_lib_cell_args(sp_lay_read)
+    sp_lay_read.add_argument("--json", action="store_true", dest="json_output", help="JSON output")
+    _add_common_opts(sp_lay_read)
+
+    sp_lay_gds = lay_sub.add_parser("export-gds", help="Export layout to GDS-II file")
+    _add_lib_cell_args(sp_lay_gds)
+    sp_lay_gds.add_argument("-o", "--output", required=True, help="Output GDS file path")
+    _add_common_opts(sp_lay_gds, timeout=120)
+
+    sp_lay_batch = lay_sub.add_parser("batch", help="Batch layout ops from JSON stdin",
+        epilog="op types: add-rect, add-path, add-label, add-via, add-polygon, fit-view",
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    _add_lib_cell_args(sp_lay_batch)
+    sp_lay_batch.add_argument("--dry-run", action="store_true", help="Preview without executing")
+    _add_common_opts(sp_lay_batch, timeout=120)
+
+    sp_lay_layers = lay_sub.add_parser("layers", help="List used layer/purpose pairs")
+    _add_lib_cell_args(sp_lay_layers)
+    _add_common_opts(sp_lay_layers)
+
     # -- daemon (internal, hidden from help) ---
     sp_daemon = subparsers.add_parser("daemon", help=argparse.SUPPRESS)
     sp_daemon.add_argument("host"); sp_daemon.add_argument("port", type=int)
@@ -577,6 +606,39 @@ def _handle_maestro(args, profile: str | None) -> int:
     return 1
 
 
+def _handle_layout(args, profile: str | None) -> int:
+    sub = getattr(args, "layout_command", None)
+    if not sub:
+        print("usage: vbridge layout {read,export-gds,batch,layers} ...")
+        print("\nsubcommands:")
+        print("  read        Read layout summary (instances, shapes, bbox)")
+        print("  export-gds  Export to GDS-II file (-o FILE)")
+        print("  batch       Batch layout ops from JSON stdin (--dry-run)")
+        print("  layers      List used layer/purpose pairs")
+        return 1
+
+    if sub == "read":
+        from vbridge.layout_cmd import run_read
+        return run_read(args.lib, args.cell,
+                        json_output=args.json_output,
+                        timeout=args.timeout, profile=profile)
+    if sub == "export-gds":
+        from vbridge.layout_cmd import run_export_gds
+        return run_export_gds(args.lib, args.cell, args.output,
+                              timeout=args.timeout, profile=profile)
+    if sub == "batch":
+        from vbridge.layout_cmd import run_batch
+        return run_batch(args.lib, args.cell, sys.stdin.read(),
+                         dry_run=getattr(args, "dry_run", False),
+                         timeout=args.timeout, profile=profile)
+    if sub == "layers":
+        from vbridge.layout_cmd import run_layers
+        return run_layers(args.lib, args.cell,
+                          timeout=args.timeout, profile=profile)
+    print(f"unknown layout subcommand: {sub}")
+    return 1
+
+
 def _handle_symbol(args, profile: str | None) -> int:
     sub = getattr(args, "symbol_command", None)
     if not sub:
@@ -779,6 +841,9 @@ def main(argv: list[str] | None = None) -> int:
 
     if command == "maestro":
         return _handle_maestro(args, profile)
+
+    if command == "layout":
+        return _handle_layout(args, profile)
 
     if command == "cleanup":
         from vbridge.cleanup_cmd import run_cleanup

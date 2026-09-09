@@ -14,7 +14,7 @@ def run_generate(lib: str, cell: str, *, overwrite: bool = False,
         result = client.symbol.generate_from_schematic(
             lib, cell, overwrite=overwrite, timeout=timeout,
         )
-        print(f"[symbol] {result.action.value}: {lib}/{cell}/{result.symbol_view}")
+        print(f"[symbol] {result.action}: {lib}/{cell}/{result.symbol_view}")
         print(f"  terminals: {', '.join(result.terminal_names)}")
         return 0
     except Exception as e:

@@ -1,0 +1,191 @@
+diff --git a/src/virtuoso_bridge/spectre/runner.py b/src/virtuoso_bridge/spectre/runner.py
+index 8218ed8..3158028 100644
+--- a/src/virtuoso_bridge/spectre/runner.py
++++ b/src/virtuoso_bridge/spectre/runner.py
+@@ -399,7 +399,10 @@ def _build_simulation_result(
+     )
+     if has_readin_error:
+         errors.append("netlist read error (missing include or syntax)")
+-    elif "license" in combined_lower and ("error" in combined_lower or "denied" in combined_lower):
++    elif any(pat in combined_lower for pat in (
++        "unable to get license", "cannot check out", "license denied",
++        "license request denied", "spectre-209",
++    )):
+         errors.append("license error")
+     elif _has_convergence_failure(combined):
+         errors.append("convergence failure")
+diff --git a/src/virtuoso_bridge/virtuoso/basic/bridge.py b/src/virtuoso_bridge/virtuoso/basic/bridge.py
+index 8562fd5..21d3a6c 100644
+--- a/src/virtuoso_bridge/virtuoso/basic/bridge.py
++++ b/src/virtuoso_bridge/virtuoso/basic/bridge.py
+@@ -578,16 +578,19 @@ let((result winName ciwNum)
+                 f'when(w~>cellView && w~>cellView~>viewName=="{escaped_view}" found=w)) found)'
+             )
+ 
+-        # Remote path
+-        username = resolve_remote_username(
+-            configured_user=self._tunnel._remote_user if self._tunnel else None,
+-            runner=self._tunnel._ssh_runner if self._tunnel else None,
+-        )
+-        from virtuoso_bridge.transport.remote_paths import resolve_client_id
+-
+-        client_id = resolve_client_id(getattr(self._tunnel, '_profile', None)) if self._tunnel else None
+-        screenshot_dir = default_virtuoso_bridge_dir(username, "screenshots", client_id)
+-        if self._tunnel and self._tunnel._ssh_runner:
++        # Screenshot path
++        is_local = self._tunnel is None or self._tunnel.ssh_runner is None
++        if is_local:
++            screenshot_dir = f"/tmp/vbridge_screenshots_{os.getenv('USER', 'user')}"
++            os.makedirs(screenshot_dir, exist_ok=True)
++        else:
++            username = resolve_remote_username(
++                configured_user=self._tunnel._remote_user,
++                runner=self._tunnel._ssh_runner,
++            )
++            from virtuoso_bridge.transport.remote_paths import resolve_client_id
++            client_id = resolve_client_id(getattr(self._tunnel, '_profile', None))
++            screenshot_dir = default_virtuoso_bridge_dir(username, "screenshots", client_id)
+             self._tunnel._ssh_runner.run_command(f"mkdir -p {screenshot_dir}")
+ 
+         from datetime import datetime
+@@ -1387,7 +1390,7 @@ let((result winName ciwNum)
+     def _prepare_il_path(self, path: str | Path) -> tuple[str, bool]:
+         """Return (remote_path, uploaded) where uploaded=False means cache hit."""
+         p = Path(path)
+-        if self._tunnel is not None and p.is_file():
++        if self._tunnel is not None and self._tunnel.ssh_runner is not None and p.is_file():
+             from virtuoso_bridge.transport.remote_paths import (
+                 default_virtuoso_bridge_dir,
+                 resolve_client_id,
+diff --git a/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge_daemon_3.py b/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge_daemon_3.py
+index 993e376..be3dedf 100644
+--- a/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge_daemon_3.py
++++ b/src/virtuoso_bridge/virtuoso/basic/resources/ramic_bridge_daemon_3.py
+@@ -285,8 +285,24 @@ def start_server():
+             )
+         )
+         sys.stderr.flush()
++        idle_timeout = int(os.environ.get("VB_IDLE_TIMEOUT", "0"))
++        last_activity = time.time()
++        if idle_timeout > 0:
++            s.settimeout(60.0)
++            sys.stderr.write(f"[RB-idle] idle_timeout={idle_timeout}s\n")
++            sys.stderr.flush()
+         while True:
+-            conn, addr = s.accept()
++            try:
++                conn, addr = s.accept()
++            except socket.timeout:
++                if idle_timeout > 0 and time.time() - last_activity > idle_timeout:
++                    sys.stderr.write(
++                        f"[RB-idle] no activity for {idle_timeout}s, shutting down\n")
++                    sys.stderr.flush()
++                    os.kill(os.getppid(), signal.SIGINT)
++                    sys.exit(0)
++                continue
++            last_activity = time.time()
+             try:
+                 handle_external_connection(conn, addr)
+             except Exception:
+diff --git a/src/virtuoso_bridge/virtuoso/schematic/cdf_param_filters.yaml b/src/virtuoso_bridge/virtuoso/schematic/cdf_param_filters.yaml
+index 5e5f5dd..a2bd463 100644
+--- a/src/virtuoso_bridge/virtuoso/schematic/cdf_param_filters.yaml
++++ b/src/virtuoso_bridge/virtuoso/schematic/cdf_param_filters.yaml
+@@ -7,6 +7,16 @@
+ # To disable filtering: pass param_filters=None (returns all params)
+ 
+ filters:
++  # --- TSMC 65nm PDK transistors ---
++  - match: {lib: "tsmcN65", cell: "nch_*"}
++    params: [model, w, wf, l, fingers, nf, m, simM, ad, as, pd, ps, nrd, nrs, sa, sb, sd]
++  - match: {lib: "tsmcN65", cell: "pch_*"}
++    params: [model, w, wf, l, fingers, nf, m, simM, ad, as, pd, ps, nrd, nrs, sa, sb, sd]
++  - match: {lib: "CRN65LP*", cell: "nch_*"}
++    params: [model, w, wf, l, fingers, nf, m, simM, ad, as, pd, ps, nrd, nrs, sa, sb, sd]
++  - match: {lib: "CRN65LP*", cell: "pch_*"}
++    params: [model, w, wf, l, fingers, nf, m, simM, ad, as, pd, ps, nrd, nrs, sa, sb, sd]
++
+   # --- TSMC 28nm PDK transistors ---
+   - match: {lib: "tsmcN28", cell: "nch_*"}
+     params: [model, w, l, fingers, m, multi, simM]
+@@ -21,6 +31,22 @@ filters:
+   - match: {lib: "tsmcN28", cell: "rpodwo_*"}
+     params: [model, r, w, l, m]
+ 
++  # --- TSMC 40nm PDK transistors ---
++  - match: {lib: "tsmcN40", cell: "nch_*"}
++    params: [model, w, wf, l, fingers, nf, m, simM, ad, as, pd, ps, nrd, nrs]
++  - match: {lib: "tsmcN40", cell: "pch_*"}
++    params: [model, w, wf, l, fingers, nf, m, simM, ad, as, pd, ps, nrd, nrs]
++  - match: {lib: "CRN40LP*", cell: "nch_*"}
++    params: [model, w, wf, l, fingers, nf, m, simM, ad, as, pd, ps, nrd, nrs]
++  - match: {lib: "CRN40LP*", cell: "pch_*"}
++    params: [model, w, wf, l, fingers, nf, m, simM, ad, as, pd, ps, nrd, nrs]
++
++  # --- GPDK 45nm ---
++  - match: {lib: "gpdk045", cell: "g45n*"}
++    params: [model, w, l, nf, m, as, ad, ps, pd]
++  - match: {lib: "gpdk045", cell: "g45p*"}
++    params: [model, w, l, nf, m, as, ad, ps, pd]
++
+   # --- analogLib passive devices ---
+   - match: {lib: "analogLib", cell: "cap"}
+     params: [c, model, w, l, m, ic]
+diff --git a/src/virtuoso_bridge/virtuoso/schematic/params.py b/src/virtuoso_bridge/virtuoso/schematic/params.py
+index 669ef12..f54a65f 100644
+--- a/src/virtuoso_bridge/virtuoso/schematic/params.py
++++ b/src/virtuoso_bridge/virtuoso/schematic/params.py
+@@ -123,6 +123,44 @@ def _resolve_instance_master(
+     return tuple(out.split("|", 1))  # type: ignore[return-value]
+ 
+ 
++
++def _sync_w_wf(params: dict[str, str]) -> dict[str, str]:
++    has_w = "w" in params
++    has_wf = "wf" in params
++    if not (has_w ^ has_wf):
++        return params
++    params = dict(params)
++    nf_str = params.get("nf") or params.get("fingers") or "1"
++    try:
++        nf = int(nf_str)
++    except ValueError:
++        nf = 1
++    if has_w and not has_wf:
++        params["wf"] = params["w"] if nf == 1 else _scale_eng(params["w"], 1.0 / nf)
++    elif has_wf and not has_w:
++        params["w"] = params["wf"] if nf == 1 else _scale_eng(params["wf"], nf)
++    return params
++
++
++def _scale_eng(eng_str: str, factor: float) -> str:
++    suffixes = {"T": 1e12, "G": 1e9, "M": 1e6, "k": 1e3, "K": 1e3,
++                "m": 1e-3, "u": 1e-6, "n": 1e-9, "p": 1e-12, "f": 1e-15}
++    s = eng_str.strip()
++    if s and s[-1] in suffixes:
++        val = float(s[:-1]) * suffixes[s[-1]]
++        suffix = s[-1]
++    else:
++        try:
++            val = float(s)
++        except ValueError:
++            return eng_str
++        suffix = ""
++    result = val * factor
++    if suffix:
++        return f"{result / suffixes[suffix]:.6g}{suffix}"
++    return f"{result:.6g}"
++
++
+ def _run_batched_param_update(
+     client: VirtuosoClient,
+     schematic_lib: str,
+@@ -133,6 +171,8 @@ def _run_batched_param_update(
+     if not params:
+         return {}
+ 
++    params = _sync_w_wf(params)
++
+     param_list = " ".join(f'"{escape_skill_string(name)}"' for name in params)
+     param_value_bindings = " ".join(
+         f'setarray(paramVals "{escape_skill_string(name)}" "{escape_skill_string(value)}")'

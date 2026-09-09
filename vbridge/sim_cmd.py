@@ -193,6 +193,7 @@ def run_measure(raw_dir: str, measure: str, signal: str, *,
 
     analysis_files = _find_analysis_files(d)
     vals = None
+    raw_vals = None
     time_vals = None
     for af in analysis_files:
         try:
@@ -200,7 +201,8 @@ def run_measure(raw_dir: str, measure: str, signal: str, *,
         except Exception:
             continue
         if signal in data and isinstance(data[signal], list):
-            vals = [x.real if isinstance(x, complex) else x for x in data[signal]]
+            raw_vals = data[signal]
+            vals = [abs(x) if isinstance(x, complex) else x for x in raw_vals]
             time_vals = data.get("time") or data.get("freq")
             if time_vals and isinstance(time_vals, list):
                 time_vals = [x.real if isinstance(x, complex) else x for x in time_vals]
@@ -213,12 +215,13 @@ def run_measure(raw_dir: str, measure: str, signal: str, *,
     if time_vals and (from_time is not None or to_time is not None):
         t0 = from_time if from_time is not None else time_vals[0]
         t1 = to_time if to_time is not None else time_vals[-1]
-        filtered = [(t, v) for t, v in zip(time_vals, vals) if t0 <= t <= t1]
+        filtered = [(t, v, r) for t, v, r in zip(time_vals, vals, raw_vals) if t0 <= t <= t1]
         if not filtered:
             print(f"[sim] error: no data in range [{t0}, {t1}]", file=sys.stderr)
             return 1
-        time_vals, vals = zip(*filtered)
-        time_vals, vals = list(time_vals), list(vals)
+        time_vals = [f[0] for f in filtered]
+        vals = [f[1] for f in filtered]
+        raw_vals = [f[2] for f in filtered]
 
     if measure == "avg":
         print(f"{sum(vals) / len(vals):.6g}")
@@ -243,11 +246,91 @@ def run_measure(raw_dir: str, measure: str, signal: str, *,
         periods = [crossings[j + 1] - crossings[j] for j in range(len(crossings) - 1)]
         freq = 1 / (sum(periods) / len(periods))
         print(f"{freq:.6g}")
+    elif measure == "gain":
+        mag_db = [20 * _log10(abs(v)) if abs(v) > 0 else -999 for v in raw_vals]
+        print(f"{max(mag_db):.4g} dB")
+    elif measure == "bw":
+        if not time_vals:
+            print("[sim] error: no freq axis for bandwidth", file=sys.stderr)
+            return 1
+        mag_db = [20 * _log10(abs(v)) if abs(v) > 0 else -999 for v in raw_vals]
+        peak = max(mag_db)
+        target = peak - 3.0
+        for i in range(1, len(mag_db)):
+            if mag_db[i - 1] >= target > mag_db[i]:
+                frac = (target - mag_db[i - 1]) / (mag_db[i] - mag_db[i - 1])
+                f3db = time_vals[i - 1] * (time_vals[i] / time_vals[i - 1]) ** frac
+                print(f"{f3db:.6g}")
+                return 0
+        print("[sim] error: -3dB point not found", file=sys.stderr)
+        return 1
+    elif measure == "ugf":
+        if not time_vals:
+            print("[sim] error: no freq axis for UGF", file=sys.stderr)
+            return 1
+        mag_db = [20 * _log10(abs(v)) if abs(v) > 0 else -999 for v in raw_vals]
+        for i in range(1, len(mag_db)):
+            if mag_db[i - 1] >= 0 > mag_db[i]:
+                frac = (0 - mag_db[i - 1]) / (mag_db[i] - mag_db[i - 1])
+                fugf = time_vals[i - 1] * (time_vals[i] / time_vals[i - 1]) ** frac
+                print(f"{fugf:.6g}")
+                return 0
+        print("[sim] error: unity-gain crossing not found", file=sys.stderr)
+        return 1
+    elif measure == "pm":
+        if not time_vals:
+            print("[sim] error: no freq axis for phase margin", file=sys.stderr)
+            return 1
+        mag_db = [20 * _log10(abs(v)) if abs(v) > 0 else -999 for v in raw_vals]
+        fugf = None
+        for i in range(1, len(mag_db)):
+            if mag_db[i - 1] >= 0 > mag_db[i]:
+                frac = (0 - mag_db[i - 1]) / (mag_db[i] - mag_db[i - 1])
+                fugf = time_vals[i - 1] * (time_vals[i] / time_vals[i - 1]) ** frac
+                phase_at_ugf = _interp_phase(raw_vals, time_vals, fugf, i)
+                pm = 180 + phase_at_ugf
+                print(f"{pm:.4g} deg (UGF={fugf:.6g} Hz)")
+                return 0
+        print("[sim] error: unity-gain crossing not found", file=sys.stderr)
+        return 1
+    elif measure == "thd":
+        mags = [abs(v) for v in raw_vals]
+        if len(mags) < 3:
+            print("[sim] error: need at least 3 harmonics for THD", file=sys.stderr)
+            return 1
+        h1 = mags[1] if mags[0] < mags[1] * 0.01 else mags[0]
+        h1_idx = 1 if mags[0] < mags[1] * 0.01 else 0
+        if h1 == 0:
+            print("[sim] error: fundamental is zero", file=sys.stderr)
+            return 1
+        harm_sum = sum(m * m for i, m in enumerate(mags) if i != h1_idx and i > 0)
+        thd = (harm_sum ** 0.5) / h1 * 100
+        print(f"{thd:.4g}%")
     else:
-        print(f"[sim] error: unknown measure '{measure}'. Use: avg, rms, minmax, freq",
+        print(f"[sim] error: unknown measure '{measure}'",
               file=sys.stderr)
         return 1
     return 0
+
+
+def _log10(x: float) -> float:
+    import math
+    return math.log10(x) if x > 0 else -999
+
+
+def _interp_phase(raw_vals: list, freqs: list, target_freq: float, idx: int) -> float:
+    """Interpolate phase at target frequency between idx-1 and idx."""
+    import cmath
+    p0 = cmath.phase(raw_vals[idx - 1]) * 180 / cmath.pi
+    p1 = cmath.phase(raw_vals[idx]) * 180 / cmath.pi
+    if abs(p1 - p0) > 180:
+        if p1 > p0:
+            p1 -= 360
+        else:
+            p0 -= 360
+    import math
+    frac = math.log(target_freq / freqs[idx - 1]) / math.log(freqs[idx] / freqs[idx - 1])
+    return p0 + frac * (p1 - p0)
 
 
 def run_license(*, profile: str | None = None) -> int:

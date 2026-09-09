@@ -1,90 +1,114 @@
-# Virtuoso Bridge Tools
+# vbridge — Virtuoso Bridge CLI
 
-Cadence Virtuoso SKILL Bridge 二进制工具集。提供命令行直接操控 Virtuoso CIW，支持一键启动、SKILL 执行、原理图批处理等功能。
+无 GUI 操控 Cadence Virtuoso：原理图编辑、仿真运行、结果测量、版图操作、PDK 查询。
 
 ## 安装
-
-解压分发包，将 `bin/` 加入 PATH：
 
 ```bash
 tar xzf virtuoso-bridge-*-linux-x86_64.tar.gz -C /opt/vtool/
 export PATH="/opt/vtool/bin:$PATH"
 ```
 
-或使用 `make deploy-bin`（需设置 `VTOOL_HOME`）：
-
-```bash
-export VTOOL_HOME=/opt/vtool
-make deploy-bin
-```
-
-## Python 源码使用
-
-分发包中 `lib/` 目录包含完整 Python 源码，可供多用户共享引用：
-
-```bash
-export PYTHONPATH="/opt/vtool/lib:$PYTHONPATH"
-```
-
-之后可直接在 Python 中使用：
-
-```python
-from virtuoso_bridge.client import VirtuosoClient
-from vbridge.auto_start import startup_sequence
-```
-
 ## 快速开始
 
 ```bash
-# 初始化配置（首次使用）
-vbridge init localhost
+vbridge init localhost                                    # 初始化
+vbridge auto-start                                        # 启动
+vbridge -V                                                # 查版本
+vbridge -h                                                # 查所有命令
+```
 
-# 一键启动 Bridge + Virtuoso
-vbridge auto-start
+## 功能概览
 
-# 执行 SKILL 表达式
-vbridge exec "ddGetLibList()~>name"
+### 原理图
 
-# 加载 IL 文件
-vbridge load setup.il
+```bash
+vbridge sch read myLib myCell --json                      # 读拓扑（instances + nets + pins）
+vbridge sch param myLib myCell M0 w 2u                    # 改参数（auto w/wf sync）
+vbridge sch batch myLib myCell < ops.json                 # 批量操作（--dry-run 预览）
+vbridge sch netlist myLib myCell -o ./nl --standalone      # 导出 Spectre 网表
+vbridge sch create myLib myCell                           # 创建 cell（--force 覆盖）
+vbridge symbol generate myLib myCell                      # 生成 symbol
+```
 
-# 查看状态
-vbridge status
+batch op 类型：`add-inst`, `delete-inst`, `move-inst`, `copy-inst`, `connect`, `label-mos`, `label-term`, `set-param`, `add-pin`
+
+### 仿真
+
+```bash
+vbridge sim run input.scs -o ./raw --mode aps             # 运行 Spectre
+vbridge sim result ./raw/                                 # 结果概览（DC + tran min/max）
+vbridge sim result ./raw/ --csv --signal ON               # 导出 CSV
+vbridge sim measure ./raw/ freq ON --from 1e-6            # 频率（1.85e9）
+vbridge sim measure ./raw/ gain out                       # AC 增益 (dB)
+vbridge sim measure ./raw/ bw out                         # -3dB 带宽 (Hz)
+vbridge sim measure ./raw/ thd ON                         # PSS THD (%)
+vbridge sim plot ./raw/ ON,OP -o wave.html                # 波形图（HTML/PNG）
+```
+
+### Maestro
+
+```bash
+vbridge maestro run myLib myCell                          # 运行 Maestro 仿真
+vbridge maestro signals myLib myCell                      # 列出信号
+vbridge maestro export myLib myCell ON -o wave.txt        # 导出波形
+vbridge maestro var myLib myCell                          # 查看设计变量
+```
+
+### 版图
+
+```bash
+vbridge layout read myLib myCell                          # 版图摘要
+vbridge layout layers myLib myCell                        # 列出 layer/purpose
+vbridge layout export-gds myLib myCell -o out.gds         # GDS 导出
+vbridge layout batch myLib myCell < ops.json              # 批量操作（--dry-run）
+```
+
+### 库管理
+
+```bash
+vbridge lib list --detail                                 # 列出库 + 路径
+vbridge lib create myLib --path /path --tech-lib PDK      # 创建库
+vbridge lib cells CRN65LP_v1.7a --filter "nch_*"          # PDK 器件列表
+vbridge lib cell-info CRN65LP_v1.7a nch_33                # 器件属性
+```
+
+### SKILL
+
+```bash
+vbridge exec "expression"                                 # 执行 SKILL
+vbridge load script.il                                    # 加载 .il 文件
+vbridge skill-find dbOpen                                 # 搜索 SKILL API 文档
+```
+
+### 工具
+
+```bash
+vbridge status                                            # 检查连接
+vbridge cleanup --dry-run                                 # 清理残留进程 + 锁文件
+vbridge screenshot ciw -o shot.png                        # 截图
 ```
 
 ## 构建
 
-依赖 Docker（manylinux2014 基础镜像，确保 CentOS 7 兼容）：
-
 ```bash
-make build        # Docker 构建（推荐）
-make build-local  # 本地构建（仅当前系统 glibc）
-make package      # 打包为 tar.gz 分发包
-make pkg-info     # 查看打包配置
-```
-
-构建会自动 patch `ramic_bridge.il`（修复 IC23.1 兼容性），编译完成后恢复。
-
-## 开发
-
-```bash
-git clone --recursive <repo-url>
-cd tool_virtuoso
-make dev          # pip install -e 上游库
-```
-
-`virtuoso-bridge-lite/` 为 git submodule，更新：
-
-```bash
-git submodule update --remote
+make build-local   # 本地构建
+make build         # Docker 构建（CentOS 7 兼容）
+make package       # 打包 tar.gz
 ```
 
 ## 架构
 
 ```
-virtuoso-bridge   底层 Bridge 二进制（上游 CLI 直接打包）
-vbridge           上层调度工具（扩展命令 + EDA 自启动）
+vbridge              CLI 入口（扩展命令 + 安全功能）
+  ├── sch_cmd        原理图操作（read/batch/param/netlist/create）
+  ├── sim_cmd        仿真控制（run/result/measure）
+  ├── plot_cmd       波形可视化（HTML/PNG）
+  ├── layout_cmd     版图操作（read/batch/layers/export-gds）
+  ├── maestro_cmd    Maestro 集成（run/signals/export/var）
+  ├── lib_cmd        库管理（list/create/cells/cell-info/views）
+  └── cleanup_cmd    进程清理
+
+virtuoso-bridge-lite  上游 Python 库（submodule）
+patches/              上游修复（IC251 兼容 + 功能增强）
 ```
-
-`vbridge` 调用 `virtuoso-bridge` 作为子进程处理 init/start/stop，自身负责 auto-start 编排、exec/load 透传和 daemon 回调。
-

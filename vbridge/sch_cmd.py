@@ -250,7 +250,7 @@ def run_batch(lib: str, cell: str, ops_json: str, *,
         return 1
 
 
-def run_create(lib: str, cell: str, *, view: str = "schematic",
+def run_create(lib: str, cell: str, *, view: str = "schematic", view_type: str = "",
                force: bool = False,
                timeout: int = 30, profile: str | None = None) -> int:
     from vbridge.env_helpers import get_client
@@ -265,11 +265,12 @@ def run_create(lib: str, cell: str, *, view: str = "schematic",
             print(f"[sch] error: {lib}/{cell}/{view} already exists. Use --force to overwrite.",
                   file=sys.stderr)
             return 1
+    vt = view_type or {"schematic": "schematic", "layout": "maskLayout"}.get(view, "schematic")
     skill = (
         f'let((cv) '
         f'cv = dbOpenCellViewByType("{escape_skill_string(lib)}" '
         f'"{escape_skill_string(cell)}" "{escape_skill_string(view)}" '
-        f'"schematic" "w") '
+        f'"{escape_skill_string(vt)}" "w") '
         f'when(cv dbSave(cv)) '
         f'if(cv "created" "failed"))'
     )

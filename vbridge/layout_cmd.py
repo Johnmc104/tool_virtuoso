@@ -101,25 +101,28 @@ def run_batch(lib: str, cell: str, ops_json: str, *,
                 try:
                     if kind == "add-rect":
                         lay.add(layout_create_rect(
-                            op["layer"], op["x1"], op["y1"], op["x2"], op["y2"],
-                            purpose=op.get("purpose", "drawing")))
+                            op["layer"], op.get("purpose", "drawing"),
+                            op["x1"], op["y1"], op["x2"], op["y2"]))
                     elif kind == "add-path":
                         points = [(p[0], p[1]) for p in op["points"]]
                         lay.add(layout_create_path(
-                            op["layer"], points, op["width"],
-                            purpose=op.get("purpose", "drawing")))
+                            op["layer"], op.get("purpose", "drawing"),
+                            points, op["width"]))
                     elif kind == "add-label":
                         lay.add(layout_create_label(
-                            op["layer"], op.get("x", 0), op.get("y", 0), op["text"],
-                            purpose=op.get("purpose", "drawing")))
+                            op["layer"], op.get("purpose", "drawing"),
+                            op.get("x", 0), op.get("y", 0), op["text"],
+                            op.get("justification", "centerCenter"),
+                            op.get("rotation", "R0"),
+                            op.get("font", "roman"),
+                            op.get("height", 0.1)))
                     elif kind == "add-via":
                         lay.add(layout_create_via_by_name(
                             op["via"], op.get("x", 0), op.get("y", 0)))
                     elif kind == "add-polygon":
                         points = [(p[0], p[1]) for p in op["points"]]
                         lay.add(layout_create_polygon(
-                            op["layer"], points,
-                            purpose=op.get("purpose", "drawing")))
+                            op["layer"], op.get("purpose", "drawing"), points))
                     elif kind == "fit-view":
                         lay.add(layout_fit_view())
                     else:
